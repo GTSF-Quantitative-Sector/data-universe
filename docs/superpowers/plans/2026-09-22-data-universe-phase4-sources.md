@@ -1262,7 +1262,24 @@ Expected: every test from Phases 2-3 plus this phase's five new test files PASSE
 
 - [ ] **Step 2: Confirm no network access is required**
 
-Run: `python -c "import socket; socket.socket = None; import data_universe; from data_universe.sources import polygon, fred, edgar, sec_adapter; from data_universe import calendar; print('ok - no import-time network use')"`
+Run (setting `socket.socket = None` breaks `ssl`'s own class hierarchy once a module imports `requests`/`urllib3`, so block only the actual connect call instead):
+
+```
+python -c "
+import socket
+
+def _blocked(*args, **kwargs):
+    raise AssertionError('network access attempted')
+
+socket.socket.connect = _blocked
+
+import data_universe
+from data_universe.sources import polygon, fred, edgar, sec_adapter
+from data_universe import calendar
+print('ok - no import-time network use')
+"
+```
+
 Expected: prints `ok - no import-time network use`
 
 - [ ] **Step 3: Nothing to commit** — this task only verifies Tasks 1-5's commits.
