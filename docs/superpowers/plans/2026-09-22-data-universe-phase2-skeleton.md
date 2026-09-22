@@ -620,14 +620,14 @@ def test_data_source_subclass_with_both_methods_instantiates():
         def hourly_bars(self, ticker, start, end):
             return empty_bars()
 
-    Complete("AAPL")  # should not raise -- DataSource takes no required __init__ args
+    Complete()  # should not raise -- DataSource takes no required __init__ args
 
 
 def test_rate_limited_error_is_a_data_source_error():
     assert issubclass(RateLimitedError, DataSourceError)
 ```
 
-Note: `test_data_source_subclass_with_both_methods_instantiates` calls `Complete("AAPL")` to confirm `DataSource` doesn't force a particular constructor signature — `DataSource` must not define `__init__`.
+Note: `test_data_source_subclass_with_both_methods_instantiates` calls `Complete()` to confirm `DataSource` doesn't force a particular constructor signature — `DataSource` must not define `__init__`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1111,5 +1111,5 @@ git commit -m "chore: add CI workflow running ruff and pytest"
 ## Self-Review Notes (for the executor)
 
 - Task 1 has no tests of its own (pure scaffolding) — its verification is the import + empty-collection + ruff checks in Step 8, which is why it's a step, not a skipped TDD cycle.
-- `DataSource` must not define `__init__`, or `test_data_source_subclass_with_both_methods_instantiates`'s `Complete("AAPL")` call will fail for the wrong reason (a signature mismatch) instead of proving the interface itself imposes no constructor.
+- `DataSource` must not define `__init__`, or `test_data_source_subclass_with_both_methods_instantiates`'s `Complete()` call will fail for the wrong reason (a signature mismatch) instead of proving the interface itself imposes no constructor.
 - Cache (`data_universe/cache.py`), real `PolygonSource`/`FredSource`/`EdgarSource`/`sec_adapter`, `calendar.py`, `ticker.py`, options toolkit, features/labels, `precompute.py`, and the docs (README/CONTRACTS.md/MAINTENANCE.md/OPEN_QUESTIONS.md) are Phases 3-8 of `PLAN.md` and are explicitly **not** part of this plan — do not add them here even if it seems convenient.
