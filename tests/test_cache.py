@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from data_universe import config
-from data_universe.cache import Cache, cached, get_cache, make_key, reset_cache
+from data_universe.cache import Cache, cached, get_cache, make_key, reset_cache, simulate
 
 
 @pytest.fixture(autouse=True)
@@ -284,3 +284,46 @@ def test_load_happens_outside_lock_allows_concurrent_different_keys():
     elapsed = time_module.perf_counter() - start
     assert results == {"a": "a", "b": "b"}
     assert elapsed < 0.35  # would be >= 0.4s if the lock serialized the two loads
+
+
+def test_simulate_returns_expected_columns_and_size_order():
+    cache = Cache(capacity=2)
+    for k in ("a", "b", "c", "a", "b", "c"):
+        cache.get_or_load("ns", (k,), lambda k=k: k)
+    log = cache.access_log()
+    result = simulate(log, [1, 2, 4])
+    assert list(result.columns) == ["size", "hit_rate", "load_seconds_saved"]
+    assert list(result["size"]) == [1, 2, 4]
+
+
+def test_simulate_hit_rate_increases_with_size():
+    # A tiny real cache (capacity=1) means most accesses in the log are real
+    # misses; a bigger simulated cache should recover more hits from the same
+    # repeating sequence of keys.
+    cache = Cache(capacity=1)
+    keys = ["a", "b", "c", "d"] * 3
+    for k in keys:
+        cache.get_or_load("ns", (k,), lambda k=k: k)
+    log = cache.access_log()
+    result = simulate(log, [1, 2, 4]).set_index("size")
+    assert result.loc[1, "hit_rate"] <= result.loc[2, "hit_rate"]
+    assert result.loc[2, "hit_rate"] <= result.loc[4, "hit_rate"]
+    assert result.loc[4, "hit_rate"] > result.loc[1, "hit_rate"]
+
+
+def test_simulate_load_seconds_saved_is_nonnegative_and_grows_with_size():
+    cache = Cache(capacity=1)
+    keys = ["a", "b", "a", "b", "a", "b"]
+    for k in keys:
+        cache.get_or_load("ns", (k,), lambda k=k: k)
+    log = cache.access_log()
+    result = simulate(log, [1, 2]).set_index("size")
+    assert result.loc[1, "load_seconds_saved"] >= 0.0
+    assert result.loc[2, "load_seconds_saved"] >= result.loc[1, "load_seconds_saved"]
+
+
+def test_simulate_on_empty_log_returns_zero_rates():
+    empty_log = get_cache().access_log()  # freshly reset, no accesses yet
+    result = simulate(empty_log, [1, 10]).set_index("size")
+    assert (result["hit_rate"] == 0.0).all()
+    assert (result["load_seconds_saved"] == 0.0).all()
