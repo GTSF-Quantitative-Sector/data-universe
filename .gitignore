@@ -1,0 +1,16 @@
+# data & secrets
+data/
+config/config.yaml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# claude code worktrees
+.claude/
