@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from data_universe import config
-from data_universe.cache import Cache, make_key
+from data_universe.cache import Cache, cached, get_cache, make_key, reset_cache
 
 
 @pytest.fixture(autouse=True)
@@ -174,3 +174,113 @@ def test_make_key_normalizes_dicts():
 
 def test_make_key_distinguishes_different_args():
     assert make_key(("AAPL",), {}) != make_key(("MSFT",), {})
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache_singleton():
+    reset_cache()
+    yield
+    reset_cache()
+
+
+def test_get_cache_returns_singleton():
+    a = get_cache()
+    b = get_cache()
+    assert a is b
+
+
+def test_reset_cache_creates_a_new_instance():
+    a = get_cache()
+    reset_cache()
+    b = get_cache()
+    assert a is not b
+
+
+def test_cached_decorator_hits_on_repeat_call_with_same_args():
+    calls = []
+
+    class Source:
+        @cached("thing")
+        def thing(self, x, y=1):
+            calls.append((x, y))
+            return x + y
+
+    s = Source()
+    assert s.thing(1, y=2) == 3
+    assert s.thing(1, y=2) == 3
+    assert len(calls) == 1
+
+
+def test_cached_decorator_misses_on_different_args():
+    calls = []
+
+    class Source:
+        @cached("thing")
+        def thing(self, x):
+            calls.append(x)
+            return x * 2
+
+    s = Source()
+    assert s.thing(1) == 2
+    assert s.thing(2) == 4
+    assert len(calls) == 2
+
+
+def test_cached_decorator_namespace_includes_class_name():
+    class SourceA:
+        @cached("daily_bars")
+        def daily_bars(self, ticker):
+            return f"A:{ticker}"
+
+    class SourceB:
+        @cached("daily_bars")
+        def daily_bars(self, ticker):
+            return f"B:{ticker}"
+
+    a_result = SourceA().daily_bars("AAPL")
+    b_result = SourceB().daily_bars("AAPL")
+    assert a_result == "A:AAPL"
+    assert b_result == "B:AAPL"
+    namespaces = set(get_cache().access_log()["namespace"])
+    assert "SourceA.daily_bars" in namespaces
+    assert "SourceB.daily_bars" in namespaces
+
+
+def test_cached_decorator_two_instances_of_same_class_share_cache():
+    calls = []
+
+    class Source:
+        @cached("thing")
+        def thing(self, x):
+            calls.append(x)
+            return x
+
+    Source().thing(1)
+    Source().thing(1)  # different instance, same class and args -> should hit
+    assert len(calls) == 1
+
+
+def test_load_happens_outside_lock_allows_concurrent_different_keys():
+    import threading
+    import time as time_module
+
+    cache = get_cache()
+
+    def slow_loader(tag):
+        time_module.sleep(0.2)
+        return tag
+
+    results = {}
+
+    def worker(key):
+        results[key] = cache.get_or_load("ns", (key,), lambda: slow_loader(key))
+
+    start = time_module.perf_counter()
+    threads = [threading.Thread(target=worker, args=(k,)) for k in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    elapsed = time_module.perf_counter() - start
+    assert results == {"a": "a", "b": "b"}
+    assert elapsed < 0.35  # would be >= 0.4s if the lock serialized the two loads
