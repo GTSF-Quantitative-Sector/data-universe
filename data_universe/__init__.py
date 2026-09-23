@@ -12,7 +12,7 @@ from data_universe.labels.registry import LABEL_REGISTRY
 from data_universe.precompute import load_feature, precompute
 from data_universe.sources import sec_adapter as universe
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "config",

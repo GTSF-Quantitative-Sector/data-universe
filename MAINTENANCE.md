@@ -10,9 +10,9 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: not currently followed.** Both are still `"0.1.0"` after 40 commits across 7
-implementation phases. Whoever picks this repo up next should bump to `"0.2.0"` as a real
-fix — not just note it here again — and start following the rule from that point on.
+**Status: bumped to `"0.2.0"`** after 40 commits across 7 implementation phases where it was
+not followed. Follow the rule from here on — bump both on every merged change, not just when
+someone notices the drift.
 
 ## 2. S&P 500 historical membership
 
