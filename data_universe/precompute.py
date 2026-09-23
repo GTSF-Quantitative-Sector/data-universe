@@ -49,6 +49,21 @@ def _output_path(name: str, out_dir: Optional[str]) -> Path:
     return _output_dir(out_dir) / f"{name}.parquet"
 
 
+def _upsert_parquet(path: Path, new_rows: pd.DataFrame) -> None:
+    """Merge `new_rows` into the parquet file at `path` on `(date, ticker)`, new rows
+    winning on a key collision. Creates the file (and its parent directory) if absent.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        existing = pd.read_parquet(path)
+        combined = pd.concat([existing, new_rows], ignore_index=True)
+    else:
+        combined = new_rows
+    combined = combined.drop_duplicates(subset=["date", "ticker"], keep="last")
+    combined = combined.sort_values(["date", "ticker"]).reset_index(drop=True)
+    combined.to_parquet(path, index=False)
+
+
 def precompute(
     tickers: List[str],
     feature_names: List[str],
@@ -70,7 +85,8 @@ def precompute(
 
     Returns:
         A `PrecomputeReport` of rows written and errors, keyed by `(ticker, feature_name)`.
-        A failure for one pair never stops the rest of the batch.
+        A failure for one pair never stops the rest of the batch. Rows for existing
+        `(date, ticker)` keys already on disk are upserted, never duplicated.
     """
     active_source = source if source is not None else PolygonSource()
     report = PrecomputeReport()
@@ -83,6 +99,7 @@ def precompute(
                 report.failed[(ticker, name)] = str(exc)
             continue
 
+        rows_by_ticker: Dict[str, pd.DataFrame] = {}
         for ticker in tickers:
             try:
                 series = _compute(registry, name, ticker, start, end, active_source)
@@ -93,9 +110,11 @@ def precompute(
             frame = pd.DataFrame(
                 {"date": clean.index, "ticker": ticker, "value": clean.to_numpy()}
             )
-            path = _output_path(name, out_dir)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            frame.to_parquet(path, index=False)
+            rows_by_ticker[ticker] = frame
             report.succeeded[(ticker, name)] = len(frame)
+
+        if rows_by_ticker:
+            new_rows = pd.concat(rows_by_ticker.values(), ignore_index=True)
+            _upsert_parquet(_output_path(name, out_dir), new_rows)
 
     return report
