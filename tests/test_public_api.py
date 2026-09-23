@@ -8,3 +8,8 @@ def test_get_cache_is_exported():
 
 def test_simulate_is_exported():
     assert q.simulate is not None
+
+
+def test_feature_and_label_registries_are_exported():
+    assert "ret_1d" in q.FEATURE_REGISTRY
+    assert "fwd_ret_15d" in q.LABEL_REGISTRY
