@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from data_universe import precompute as pc
 from data_universe.sources.fakes import FakePolygonSource
@@ -102,3 +103,23 @@ def test_precompute_isolates_one_ticker_failure_from_the_rest(tmp_path):
 
     frame = pd.read_parquet(tmp_path / "ret_1d.parquet")
     assert set(frame["ticker"]) == {"AAPL"}
+
+
+def test_load_feature_reads_back_precomputed_values(tmp_path):
+    source = FakePolygonSource()
+    pc.precompute(
+        ["AAPL", "MSFT"], ["ret_1d"], "2024-01-02", "2024-01-31",
+        out_dir=str(tmp_path), source=source,
+    )
+
+    frame = pc.load_feature("ret_1d", out_dir=str(tmp_path))
+    assert list(frame.columns) == ["date", "ticker", "value"]
+    assert set(frame["ticker"]) == {"AAPL", "MSFT"}
+
+    filtered = pc.load_feature("ret_1d", tickers=["AAPL"], out_dir=str(tmp_path))
+    assert set(filtered["ticker"]) == {"AAPL"}
+
+
+def test_load_feature_raises_a_clear_error_when_nothing_precomputed(tmp_path):
+    with pytest.raises(FileNotFoundError, match="ret_1d"):
+        pc.load_feature("ret_1d", out_dir=str(tmp_path))

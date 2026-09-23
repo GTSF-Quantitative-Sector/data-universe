@@ -118,3 +118,33 @@ def precompute(
             _upsert_parquet(_output_path(name, out_dir), new_rows)
 
     return report
+
+
+def load_feature(
+    name: str,
+    tickers: Optional[List[str]] = None,
+    out_dir: Optional[str] = None,
+) -> pd.DataFrame:
+    """Read back a precomputed feature/label written by `precompute()`.
+
+    Args:
+        name: Feature/label name (must have been precomputed at least once).
+        tickers: Optional subset of tickers to filter to. Defaults to all tickers present.
+        out_dir: Output directory `precompute()` wrote to. Defaults to
+            `<config.get_data_dir()>/processed`, matching `precompute()`'s default.
+
+    Returns:
+        A long-format `date, ticker, value` DataFrame.
+
+    Raises:
+        FileNotFoundError: If `name` has never been precomputed to `out_dir`.
+    """
+    path = _output_path(name, out_dir)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No precomputed data for {name!r} at {path} -- run precompute() first."
+        )
+    frame = pd.read_parquet(path)
+    if tickers is not None:
+        frame = frame[frame["ticker"].isin(tickers)].reset_index(drop=True)
+    return frame
