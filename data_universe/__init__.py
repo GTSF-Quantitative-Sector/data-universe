@@ -9,6 +9,7 @@ from data_universe import config
 from data_universe.cache import get_cache, simulate
 from data_universe.features.registry import FEATURE_REGISTRY
 from data_universe.labels.registry import LABEL_REGISTRY
+from data_universe.precompute import load_feature, precompute
 from data_universe.sources import sec_adapter as universe
 
 __version__ = "0.1.0"
@@ -20,5 +21,7 @@ __all__ = [
     "universe",
     "FEATURE_REGISTRY",
     "LABEL_REGISTRY",
+    "precompute",
+    "load_feature",
     "__version__",
 ]
