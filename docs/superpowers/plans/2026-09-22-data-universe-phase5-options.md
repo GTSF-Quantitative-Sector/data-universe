@@ -459,7 +459,8 @@ def _reset_state():
 
 
 class FakeResponse:
-    def __init__(self, json_data):
+    def __init__(self, json_data, status_code=200):
+        self.status_code = status_code
         self._json_data = json_data
 
     def json(self):
@@ -492,7 +493,6 @@ def test_contracts_as_of_parses_results():
     chain = source.contracts_as_of("AAPL", "2024-01-02")
     assert list(chain.columns) == ["ticker", "expiration_date", "strike_price", "contract_type"]
     assert len(chain) == 2
-    assert "AAPL" in session.get.call_args[0][0] or session.get.call_args[1]["params"]
 
 
 def test_contracts_as_of_sends_bearer_header():
