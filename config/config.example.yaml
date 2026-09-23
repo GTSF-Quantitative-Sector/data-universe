@@ -1,0 +1,13 @@
+# Copy this file to config/config.yaml and fill in real values.
+# config/config.yaml is gitignored -- never commit real credentials.
+# Every key here can also be set via an environment variable (see README.md
+# "Configuration"); an environment variable already set always overrides this file.
+
+polygon_api_key: ""
+polygon_base_url: "https://api.polygon.io"
+polygon_flatfiles_endpoint: ""
+polygon_s3_access_key: ""
+polygon_s3_secret_key: ""
+fred_api_key: ""
+data_dir: "data"
+cache_size: 256
