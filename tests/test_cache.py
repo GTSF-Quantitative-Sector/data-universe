@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from data_universe import config
-from data_universe.cache import Cache, cached, get_cache, make_key, reset_cache, simulate
+from data_universe.cache import Cache, _sizeof, cached, get_cache, make_key, reset_cache, simulate
 
 
 @pytest.fixture(autouse=True)
@@ -320,6 +320,26 @@ def test_simulate_load_seconds_saved_is_nonnegative_and_grows_with_size():
     result = simulate(log, [1, 2]).set_index("size")
     assert result.loc[1, "load_seconds_saved"] >= 0.0
     assert result.loc[2, "load_seconds_saved"] >= result.loc[1, "load_seconds_saved"]
+
+
+def test_sizeof_dict_counts_referenced_string_bytes_not_just_container_overhead():
+    # sys.getsizeof(dict) only counts the dict's own overhead, not what its
+    # values reference -- a dict holding one big string must size much larger
+    # than a bare dict's shallow overhead.
+    small = {"ticker": "AAPL"}
+    big = {"ticker": "AAPL", "name": "x" * 100_000}
+    assert _sizeof(big) - _sizeof(small) > 90_000
+
+
+def test_sizeof_list_of_dicts_counts_element_bytes():
+    big = [{"a": "x" * 100_000} for _ in range(3)]
+    assert _sizeof(big) > 250_000
+
+
+def test_stats_bytes_held_reflects_deep_dict_size():
+    cache = Cache(capacity=10)
+    cache.get_or_load("ns", ("k",), lambda: {"name": "x" * 100_000})
+    assert cache.stats()["bytes_held"] > 90_000
 
 
 def test_simulate_on_empty_log_returns_zero_rates():

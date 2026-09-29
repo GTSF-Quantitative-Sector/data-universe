@@ -80,16 +80,40 @@ def make_key(args: tuple, kwargs: dict) -> tuple:
     return (norm_args, norm_kwargs)
 
 
-def _sizeof(value: Any) -> int:
-    """Best-effort byte size of a cached value, used for `stats()` and the access log."""
+def _sizeof(value: Any, _seen: Optional[set] = None) -> int:
+    """Best-effort byte size of a cached value, used for `stats()` and the access log.
+
+    `sys.getsizeof()` alone only counts a container's own overhead, not what it
+    references, so a dict or list of strings (e.g. `MassiveSource.ticker_details`'s
+    return value) would otherwise size as a few hundred bytes no matter how much
+    text it holds. Recurses into dict/list/tuple values to add those in; `_seen`
+    guards against double-counting shared references or looping on a cycle.
+    """
     if isinstance(value, pd.DataFrame):
         return int(value.memory_usage(deep=True).sum())
     if isinstance(value, pd.Series):
         return int(value.memory_usage(deep=True))
-    try:
-        return sys.getsizeof(value)
-    except TypeError:
+
+    if _seen is None:
+        _seen = set()
+    value_id = id(value)
+    if value_id in _seen:
         return 0
+    _seen.add(value_id)
+
+    try:
+        size = sys.getsizeof(value)
+    except TypeError:
+        size = 0
+
+    if isinstance(value, dict):
+        for k, v in value.items():
+            size += _sizeof(k, _seen) + _sizeof(v, _seen)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            size += _sizeof(item, _seen)
+
+    return size
 
 
 def _copy_value(value: Any) -> Any:
