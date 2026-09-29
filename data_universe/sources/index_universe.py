@@ -59,7 +59,7 @@ REFERENCE_FIELDS = ["primary_exchange", "type", "cik", "composite_figi", "share_
 _WIKI_URLS = {
     "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
     "dow": "https://en.wikipedia.org/wiki/List_of_Dow_Jones_Industrial_Average_companies",
-    "nasdaq100": "https://en.wikipedia.org/wiki/Nasdaq-100",
+    "nasdaq100": "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
 }
 
 # (min, max) plausible row count of each constituents table. Wide enough for normal

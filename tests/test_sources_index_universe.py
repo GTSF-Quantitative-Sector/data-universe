@@ -259,7 +259,7 @@ def test_source_sp500_and_nasdaq100_helpers():
     assert len(source.sp500()) == 503
     assert len(source.nasdaq100()) == 101
     assert "List_of_S%26P_500_companies" in session.get.call_args_list[0][0][0]
-    assert session.get.call_args_list[1][0][0].endswith("/Nasdaq-100")
+    assert session.get.call_args_list[1][0][0].endswith("/List_of_NASDAQ-100_companies")
 
 
 def test_source_http_error_propagates():
