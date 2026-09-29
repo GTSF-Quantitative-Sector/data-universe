@@ -1,0 +1,1604 @@
+diff --git a/MAINTENANCE.md b/MAINTENANCE.md
+index b908077..3228488 100644
+--- a/MAINTENANCE.md
++++ b/MAINTENANCE.md
+@@ -26,7 +26,7 @@ file's maintenance burden into this repo; just keep the `sec_parser` dependency
+ 
+ ## 3. API keys
+ 
+-Polygon, FRED, and (once `FlatFilesSource` is built — see `OPEN_QUESTIONS.md` item 12) S3
++Polygon/Massive, FRED, and (once `FlatFilesSource` is built — see `OPEN_QUESTIONS.md` item 12) S3
+ flat-files credentials are read from environment variables or `config/config.yaml`
+ (gitignored) — never committed, never logged (`config.py`'s module docstring). Rotate them
+ per each project's own security policy; this repo has no key-rotation automation of its own.
+@@ -44,3 +44,14 @@ floor pinned only locally doesn't help the next person who installs fresh.
+ 3.11, using only `sources/fakes.py` — no live API calls, no secrets required. If a new source
+ module is added, keep it testable against a fake/mock the same way; don't make CI depend on
+ a real API key.
++
++## 6. Index membership tables
++
++`sources/index_universe.py` scrapes current S&P 500, Dow and Nasdaq-100 membership from
++Wikipedia. If a run raises `UniverseParseError`, open the page named in the message and
++compare it with the accepted header names (`_TICKER_HEADERS`, `_NAME_HEADERS`,
++`_SECTOR_HEADERS`) and the row-count ranges (`_EXPECTED_ROWS`) in that module; Wikipedia has
++already renamed columns once. Re-run the collector after each S&P 500 or Nasdaq-100
++reconstitution if you rely on saved parquet files, since those are dated snapshots, and put a
++real contact address in the User-Agent default (`_DEFAULT_USER_AGENT`) before running it on a
++schedule.
+diff --git a/OPEN_QUESTIONS.md b/OPEN_QUESTIONS.md
+index 30612f4..293a5cd 100644
+--- a/OPEN_QUESTIONS.md
++++ b/OPEN_QUESTIONS.md
+@@ -2,7 +2,7 @@
+ 
+ Every unverified assumption and known implementation gap in this repo, consolidated in one
+ place. Numbers match `PLAN.md` §9 where that section already numbered an item, so
+-cross-references from code docstrings stay stable. Items 11-14 are new gaps discovered
++cross-references from code docstrings stay stable. Items 11-17 are new gaps discovered
+ during implementation, not present in `PLAN.md` §9.
+ 
+ | # | Question | Why it matters | Current stance | Owner / next step |
+@@ -23,6 +23,9 @@ during implementation, not present in `PLAN.md` §9.
+ | 12 | Is `FlatFilesSource` (`data_universe/sources/flatfiles.py`, `PLAN.md` §2) still wanted? | No S3 bulk download or `download_options_day_aggs()` exists. `POLYGON_FLATFILES_ENDPOINT`, `POLYGON_S3_ACCESS_KEY`, `POLYGON_S3_SECRET_KEY` are read by `config.py` and the `s3` extra (`boto3`) is already declared in `setup.py`, but nothing consumes any of it yet. | Not built in any of Phases 1-7. | Build it in a future phase if bulk options history is actually needed; until then, `PolygonOptionsSource.daily_close` covers per-contract, per-day lookups one at a time. |
+ | 13 | Has the version-bump rule (`PLAN.md` §0) actually been followed? | Consumers pinning by version won't see any of the 40 commits' worth of changes across 7 phases. | Was not followed through Phase 8 (both stuck at `"0.1.0"`); now bumped to `"0.2.0"`. | See `MAINTENANCE.md` item 1 — keep following the rule on every subsequent change. |
+ | 14 | When does single-name IV30 land? | `vrp_signal_rv21` and `fwd_vrp_expost` are registered per `PLAN.md` §6 ("provide interfaces and stubs") but call `options/iv30.py`'s stub, which always raises `NotImplementedError` for any ticker but `"SPY"`. | Stubbed, documented, tested (the no-lookahead property test special-cases both names to run against `"SPY"` only). | Owner: vrp-research data track (per `options/iv30.py`'s own docstring — "Lionel"). |
++| 15 | Are the Massive host, endpoint paths and fields correct? | `MassiveSource.list_tickers`/`ticker_details` and the `api.massive.com` host feed the universe cross-check and `nasdaq_listed`. | Written against Massive's REST docs (`/v3/reference/tickers`, `/v3/reference/tickers/{ticker}`, Bearer auth, `next_url` pagination, `limit` up to 1000) and mocked in every test; never called live from CI. Polygon.io rebranded as Massive on 2025-10-30 and existing keys are documented to keep working, so the Polygon key is the fallback. | Run `python -m data_universe.sources.index_universe` once with a real key before relying on it; confirm the plan's rate limit and reference-data entitlement. Cross-referenced from `sources/massive.py`. |
++| 16 | Is Wikipedia acceptable as the source of index membership? | Massive publishes index prices but, as far as could be found, no constituent lists, so `sp500`/`dow`/`nasdaq100` are scraped from Wikipedia. It is not an official source, its headers have already drifted (the Nasdaq-100 table moved from GICS to ICB sector columns), and it only gives current membership, which is survivorship-biased for backtests. | Headers are matched by several accepted names, row counts are checked (Dow 30, S&P 500 490-515, Nasdaq-100 95-110), and `UniverseParseError` is raised instead of returning a partial list. Point-in-time S&P 500 stays with `sec_adapter.sp500(query_date=...)`. | Flag only. If an official feed is preferred, swap an index provider's or ETF issuer's holdings file in behind `IndexUniverseSource`. See `MAINTENANCE.md` item 6. |
++| 17 | Does "Nasdaq" mean the Nasdaq-100 or every Nasdaq-listed stock? | Roughly a hundred names versus thousands. | Both are provided: `nasdaq100` (Wikipedia) and `nasdaq_listed` (Massive reference data, primary exchange XNAS, common stock only by default). | Confirm which the research projects want and drop the other from the CLI defaults. |
+ 
+ See [`CONTRACTS.md`](CONTRACTS.md) for the schemas these assumptions feed into, and
+ [`MAINTENANCE.md`](MAINTENANCE.md) for the recurring-task side of items 1, 12, and 13.
+diff --git a/README.md b/README.md
+index 50cbe23..1c7fc9e 100644
+--- a/README.md
++++ b/README.md
+@@ -66,6 +66,12 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
+   `sp500(query_date=...)` and `fundamentals(ticker)`), and `fakes.FakePolygonSource` /
+   `fakes.FakeMarket` — a deterministic synthetic market with a planted beta/alpha, used by
+   the whole test suite and available to anyone without an API key.
++- **`sources/massive.py`** — `MassiveSource`, `PolygonSource` pointed at Massive (Polygon.io's
++  new name, host `api.massive.com`): the same bars methods plus `list_tickers` and
++  `ticker_details` reference data. Reads `MASSIVE_API_KEY`, falling back to the Polygon key.
++- **`sources/index_universe.py`** — collects the S&P 500, Dow 30, Nasdaq-100 and all
++  Nasdaq-listed stocks, cross-checks them against Massive, and saves them to parquet. See
++  "Index universes" below.
+ - **`options/`** — `occ` (OCC ticker parse/build), `black_scholes` (price, vega,
+   implied_vol), `chain` (`as_of`, `atm_strike`, `nearest_expiry_after`, `straddle`), and
+   `iv30` — a documented `NotImplementedError` stub (owner: vrp-research data track).
+@@ -86,6 +92,33 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
+   isolation (`PrecomputeReport`), and `load_feature(name, tickers=None, out_dir=None)` reads
+   the result back.
+ 
++## Index universes
++
++```bash
++python -m data_universe.sources.index_universe                 # S&P 500, Dow, Nasdaq-100, Nasdaq-listed
++python -m data_universe.sources.index_universe --skip-massive  # constituents only, no API key needed
++```
++
++```python
++import data_universe as q
++from data_universe.sources.index_universe import collect_universes, all_tickers, load_universe
++from data_universe.sources.massive import MassiveSource
++
++universes = collect_universes(massive=MassiveSource(), save=True)   # saves to <data_dir>/raw/universe
++universes["dow"][["ticker", "name", "in_massive", "primary_exchange"]]
++q.precompute(all_tickers(universes), ["rv_cc_21d"], "2024-01-01", "2024-06-01")
++load_universe("sp500")                                              # newest saved copy
++```
++
++`sp500`, `dow` and `nasdaq100` come from Wikipedia (Massive has index prices but no
++constituent lists); `nasdaq_listed` is every active Nasdaq-listed common stock from Massive
++reference data, which is not the Nasdaq-100. Massive is called once for the active-stock
++list (roughly a dozen paginated requests) and adds `in_massive`, `primary_exchange`, `type`,
++`cik` and FIGI columns to each universe. **These are today's memberships**: for backtests use
++`q.universe.sp500(query_date=...)`. To pull bars from the Massive host, use `MassiveSource`
++(it has the same `daily_bars`/`hourly_bars` methods as `PolygonSource`). See
++`OPEN_QUESTIONS.md` items 15-17.
++
+ ## Frame conventions
+ 
+ - **Bar frames** (`sources/base.py`): tz-aware `America/New_York` `DatetimeIndex` named
+@@ -107,6 +140,8 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
+ | `POLYGON_FLATFILES_ENDPOINT` | S3-compatible flat-files endpoint (read by `config.py`; no consumer built yet — see "Not yet implemented") |
+ | `POLYGON_S3_ACCESS_KEY` | S3 access key for flat-files (same caveat) |
+ | `POLYGON_S3_SECRET_KEY` | S3 secret key for flat-files (same caveat) |
++| `MASSIVE_API_KEY` | Massive API key (Bearer header). Falls back to `POLYGON_API_KEY` if unset |
++| `MASSIVE_BASE_URL` | Massive REST base URL (default `https://api.massive.com`) |
+ | `FRED_API_KEY` | FRED API key, used by `sources.fred.FredSource` |
+ | `DATA_UNIVERSE_DATA_DIR` | Root directory for raw/interim/processed data and cache logs |
+ | `DATA_UNIVERSE_CACHE_SIZE` | Default `Cache` capacity (entry count) |
+diff --git a/config/config.example.yaml b/config/config.example.yaml
+index 54dccd1..3195efa 100644
+--- a/config/config.example.yaml
++++ b/config/config.example.yaml
+@@ -8,6 +8,9 @@ polygon_base_url: "https://api.polygon.io"
+ polygon_flatfiles_endpoint: ""
+ polygon_s3_access_key: ""
+ polygon_s3_secret_key: ""
++# Massive is Polygon.io under its new name. Leave massive_api_key empty to reuse polygon_api_key.
++massive_api_key: ""
++massive_base_url: "https://api.massive.com"
+ fred_api_key: ""
+ data_dir: "data"
+ cache_size: 256
+diff --git a/data_universe/__init__.py b/data_universe/__init__.py
+index 561d2c9..ac7bc8c 100644
+--- a/data_universe/__init__.py
++++ b/data_universe/__init__.py
+@@ -12,7 +12,7 @@ from data_universe.labels.registry import LABEL_REGISTRY
+ from data_universe.precompute import load_feature, precompute
+ from data_universe.sources import sec_adapter as universe
+ 
+-__version__ = "0.2.0"
++__version__ = "0.3.0"
+ 
+ __all__ = [
+     "config",
+diff --git a/data_universe/config.py b/data_universe/config.py
+index 8715920..cb7bb05 100644
+--- a/data_universe/config.py
++++ b/data_universe/config.py
+@@ -14,6 +14,7 @@ from typing import Optional
+ _DEFAULT_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
+ _DEFAULT_CACHE_SIZE = 256
+ _DEFAULT_POLYGON_BASE_URL = "https://api.polygon.io"
++_DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
+ 
+ # Maps internal state keys to the environment variable that seeds them.
+ _ENV_VARS = {
+@@ -22,6 +23,8 @@ _ENV_VARS = {
+     "polygon_flatfiles_endpoint": "POLYGON_FLATFILES_ENDPOINT",
+     "polygon_s3_access_key": "POLYGON_S3_ACCESS_KEY",
+     "polygon_s3_secret_key": "POLYGON_S3_SECRET_KEY",
++    "massive_key": "MASSIVE_API_KEY",
++    "massive_base_url": "MASSIVE_BASE_URL",
+     "fred_key": "FRED_API_KEY",
+     "data_dir": "DATA_UNIVERSE_DATA_DIR",
+     "cache_size": "DATA_UNIVERSE_CACHE_SIZE",
+@@ -34,6 +37,8 @@ _YAML_KEYS = {
+     "polygon_flatfiles_endpoint": "polygon_flatfiles_endpoint",
+     "polygon_s3_access_key": "polygon_s3_access_key",
+     "polygon_s3_secret_key": "polygon_s3_secret_key",
++    "massive_api_key": "massive_key",
++    "massive_base_url": "massive_base_url",
+     "fred_api_key": "fred_key",
+     "data_dir": "data_dir",
+     "cache_size": "cache_size",
+@@ -66,6 +71,8 @@ def reset() -> None:
+     _state["polygon_flatfiles_endpoint"] = _default("polygon_flatfiles_endpoint", None)
+     _state["polygon_s3_access_key"] = _default("polygon_s3_access_key", None)
+     _state["polygon_s3_secret_key"] = _default("polygon_s3_secret_key", None)
++    _state["massive_key"] = _default("massive_key", None)
++    _state["massive_base_url"] = _default("massive_base_url", _DEFAULT_MASSIVE_BASE_URL)
+     _state["fred_key"] = _default("fred_key", None)
+     _state["data_dir"] = _default("data_dir", _DEFAULT_DATA_DIR)
+     _state["cache_size"] = _default("cache_size", _DEFAULT_CACHE_SIZE)
+@@ -134,6 +141,36 @@ def get_polygon_s3_secret_key() -> Optional[str]:
+     return _state["polygon_s3_secret_key"]
+ 
+ 
++def set_massive_key(key: str) -> None:
++    """Set the Massive (formerly Polygon.io) API key. Sent as an `Authorization: Bearer`
++    header, never a URL param. If unset, `MassiveSource` falls back to the Polygon key,
++    since existing Polygon.io keys keep working on Massive.
++
++    Args:
++        key: Massive API key.
++    """
++    _state["massive_key"] = key
++
++
++def get_massive_key() -> Optional[str]:
++    """Return the configured Massive API key, or None if unset."""
++    return _state["massive_key"]
++
++
++def set_massive_base_url(url: str) -> None:
++    """Set the Massive REST base URL (default `https://api.massive.com`).
++
++    Args:
++        url: Base URL, no trailing slash.
++    """
++    _state["massive_base_url"] = url
++
++
++def get_massive_base_url() -> str:
++    """Return the configured Massive REST base URL."""
++    return _state["massive_base_url"]
++
++
+ def set_fred_key(key: str) -> None:
+     """Set the FRED API key used to fetch the risk-free rate series."""
+     _state["fred_key"] = key
+diff --git a/data_universe/sources/index_universe.py b/data_universe/sources/index_universe.py
+new file mode 100644
+index 0000000..8f1b864
+--- /dev/null
++++ b/data_universe/sources/index_universe.py
+@@ -0,0 +1,482 @@
++"""Collect index universes -- S&P 500, Dow 30, Nasdaq-100, all Nasdaq-listed stocks -- and
++cross-check them against Massive (formerly Polygon.io) reference data.
++
++Where each list comes from:
++
++- `sp500`, `dow`, `nasdaq100`: the constituent tables on Wikipedia. Massive publishes index
++  *prices* (I:SPX, I:DJI, I:NDX) but no constituent lists, so membership has to come from
++  elsewhere. Wikipedia is free and keyed by ticker, but it is not an official source.
++- `nasdaq_listed`: every active common stock whose primary exchange is Nasdaq (MIC "XNAS"),
++  straight from Massive's reference data. This is *not* the Nasdaq-100.
++
++**All of these are today's membership.** Using them to pick a backtest universe over past
++dates introduces survivorship bias. For point-in-time S&P 500 use
++`data_universe.sources.sec_adapter.sp500(query_date=...)` instead.
++
++Tickers are stored in Massive's format: share classes use a dot (`BRK.B`, `BF.B`). Sector
++labels are whatever the source page uses -- GICS for the S&P 500, Wikipedia's own "Sector"
++for the Dow, ICB for the Nasdaq-100 -- so they are not comparable across indexes.
++
++Every parsed table is checked against an expected row count, and the parser raises
++`UniverseParseError` rather than return a partial list if Wikipedia's layout changes.
++
++Usage:
++
++    python -m data_universe.sources.index_universe                  # all four, with Massive
++    python -m data_universe.sources.index_universe --skip-massive   # constituents only
++
++or from Python:
++
++    from data_universe.sources.index_universe import IndexUniverseSource, collect_universes
++    from data_universe.sources.massive import MassiveSource
++
++    universes = collect_universes(massive=MassiveSource(), save=True)
++    universes["sp500"]["ticker"].tolist()
++"""
++from __future__ import annotations
++
++import argparse
++import datetime as dt
++import re
++import sys
++from io import StringIO
++from pathlib import Path
++from typing import Dict, List, Optional, Sequence
++
++import pandas as pd
++import requests
++
++from data_universe import config
++from data_universe.sources.base import DataSourceError
++from data_universe.sources.massive import MassiveSource
++
++WIKI_INDEXES = ("sp500", "dow", "nasdaq100")
++ALL_INDEXES = WIKI_INDEXES + ("nasdaq_listed",)
++
++UNIVERSE_COLUMNS = ["index", "ticker", "name", "sector", "source", "as_of"]
++REFERENCE_FIELDS = ["primary_exchange", "type", "cik", "composite_figi", "share_class_figi"]
++
++_WIKI_URLS = {
++    "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
++    "dow": "https://en.wikipedia.org/wiki/List_of_Dow_Jones_Industrial_Average_companies",
++    "nasdaq100": "https://en.wikipedia.org/wiki/Nasdaq-100",
++}
++
++# (min, max) plausible row count of each constituents table. Wide enough for normal
++# membership changes (503 stocks in the S&P 500, 101 in the Nasdaq-100 because of dual share
++# classes), tight enough to reject the wrong table or a half-parsed page.
++_EXPECTED_ROWS = {"sp500": (490, 515), "dow": (30, 30), "nasdaq100": (95, 110)}
++
++# Wikipedia has renamed these headers before (the Nasdaq-100 table moved from GICS to ICB
++# sector columns), so each field accepts several header names, in order of preference.
++_TICKER_HEADERS = ("symbol", "ticker")
++_NAME_HEADERS = ("security", "company")
++_SECTOR_HEADERS = ("gics sector", "sector", "icb industry", "industry")
++
++_TICKER_PATTERN = re.compile(r"^[A-Z0-9]{1,6}(\.[A-Z0-9]{1,2})?$")
++
++# Wikimedia asks automated clients to send a User-Agent that identifies them and gives a
++# contact. Replace the placeholder address with a real one for regular use.
++_DEFAULT_USER_AGENT = "data_universe (contact: gtsf-quant@example.org)"
++
++
++class UniverseParseError(DataSourceError):
++    """Raised when a constituents page doesn't look the way the parser expects."""
++
++
++def _strip_footnotes(text: str) -> str:
++    """Remove Wikipedia footnote markers such as "[1]" or "[a]"."""
++    return re.sub(r"\[.*?\]", "", text)
++
++
++def _normalize_header(column) -> str:
++    return _strip_footnotes(str(column)).strip().lower()
++
++
++def _find_column(headers: List[str], candidates: Sequence[str]) -> Optional[int]:
++    """Position of the first header matching any candidate (candidates in preference order)."""
++    for candidate in candidates:
++        for position in range(len(headers)):
++            if headers[position] == candidate:
++                return position
++    return None
++
++
++def clean_ticker(raw) -> str:
++    """Normalize a scraped ticker cell to Massive's format.
++
++    Drops footnote markers, any "NASDAQ:" style prefix and whitespace, uppercases, and
++    turns a dash into a dot ("BRK-B" -> "BRK.B"). Returns "" for an empty cell.
++    """
++    if pd.isna(raw):
++        return ""
++    text = _strip_footnotes(str(raw).replace("\xa0", " "))
++    text = text.split(":")[-1].strip().upper()
++    return text.replace("-", ".")
++
++
++def _cell_text(table: pd.DataFrame, row: int, column: Optional[int]) -> Optional[str]:
++    if column is None:
++        return None
++    value = table.iloc[row, column]
++    if pd.isna(value):
++        return None
++    text = _strip_footnotes(str(value)).strip()
++    if text == "":
++        return None
++    return text
++
++
++def _describe_tables(tables: List[pd.DataFrame]) -> str:
++    """Short summary of what was on the page, for error messages."""
++    parts = []
++    for table in tables:
++        if isinstance(table.columns, pd.MultiIndex):
++            parts.append(f"{len(table)} rows x multi-level header")
++        else:
++            headers = [_normalize_header(c) for c in table.columns]
++            parts.append(f"{len(table)} rows {headers[:4]}")
++    return "; ".join(parts)
++
++
++def parse_constituents(index: str, html: str, source_url: str = "") -> pd.DataFrame:
++    """Parse a Wikipedia page's constituents table into a universe frame.
++
++    Picks the one table that has a ticker column ("Symbol" or "Ticker") and a row count in
++    the expected range for `index`, so decoy tables (change logs, annual returns, ...) on
++    the same page are skipped.
++
++    Args:
++        index: One of `WIKI_INDEXES`.
++        html: The page's HTML.
++        source_url: Recorded in the `source` column.
++
++    Returns:
++        A frame with the columns in `UNIVERSE_COLUMNS`, one row per ticker, in page order.
++
++    Raises:
++        UniverseParseError: If no table matches, or a ticker cell is malformed.
++    """
++    if index not in _EXPECTED_ROWS:
++        raise ValueError(f"Unknown Wikipedia index {index!r}; expected one of {WIKI_INDEXES}")
++    low, high = _EXPECTED_ROWS[index]
++
++    try:
++        tables = pd.read_html(StringIO(html), flavor="lxml")
++    except ValueError as exc:  # pandas raises ValueError when the page has no tables
++        raise UniverseParseError(f"{index}: no HTML tables found on {source_url}") from exc
++
++    table = None
++    headers: List[str] = []
++    for candidate in tables:
++        if isinstance(candidate.columns, pd.MultiIndex):
++            continue
++        candidate_headers = [_normalize_header(c) for c in candidate.columns]
++        if _find_column(candidate_headers, _TICKER_HEADERS) is None:
++            continue
++        if low <= len(candidate) <= high:
++            table = candidate
++            headers = candidate_headers
++            break
++    if table is None:
++        raise UniverseParseError(
++            f"{index}: found no table with a Symbol/Ticker column and {low}-{high} rows on "
++            f"{source_url}. Wikipedia's layout may have changed. Tables seen: "
++            f"{_describe_tables(tables)}"
++        )
++
++    ticker_position = _find_column(headers, _TICKER_HEADERS)
++    name_position = _find_column(headers, _NAME_HEADERS)
++    sector_position = _find_column(headers, _SECTOR_HEADERS)
++    as_of = dt.date.today().isoformat()
++
++    records = []
++    seen = set()
++    for row in range(len(table)):
++        ticker = clean_ticker(table.iloc[row, ticker_position])
++        if ticker == "":
++            continue
++        if not _TICKER_PATTERN.match(ticker):
++            raise UniverseParseError(f"{index}: unexpected ticker {ticker!r} in row {row}")
++        if ticker in seen:
++            continue
++        seen.add(ticker)
++        records.append(
++            {
++                "index": index,
++                "ticker": ticker,
++                "name": _cell_text(table, row, name_position),
++                "sector": _cell_text(table, row, sector_position),
++                "source": source_url,
++                "as_of": as_of,
++            }
++        )
++    return pd.DataFrame(records, columns=UNIVERSE_COLUMNS)
++
++
++class IndexUniverseSource:
++    """Current S&P 500, Dow 30 and Nasdaq-100 constituents, scraped from Wikipedia.
++
++    Args:
++        session: An injectable `requests.Session` (for tests). Defaults to a fresh
++            pooled session.
++        user_agent: Identifies this client to Wikimedia. Use a real contact address.
++    """
++
++    def __init__(
++        self,
++        session: Optional[requests.Session] = None,
++        user_agent: str = _DEFAULT_USER_AGENT,
++    ) -> None:
++        self._session = session or requests.Session()
++        self._user_agent = user_agent
++
++    def _fetch_html(self, url: str) -> str:
++        response = self._session.get(url, headers={"User-Agent": self._user_agent}, timeout=30)
++        response.raise_for_status()
++        return response.text
++
++    def constituents(self, index: str) -> pd.DataFrame:
++        """Fetch and parse one index. `index` is "sp500", "dow" or "nasdaq100"."""
++        if index not in _WIKI_URLS:
++            raise ValueError(f"Unknown Wikipedia index {index!r}; expected one of {WIKI_INDEXES}")
++        url = _WIKI_URLS[index]
++        return parse_constituents(index, self._fetch_html(url), url)
++
++    def sp500(self) -> pd.DataFrame:
++        """Current S&P 500 constituents (about 503 tickers; some companies list two classes)."""
++        return self.constituents("sp500")
++
++    def dow(self) -> pd.DataFrame:
++        """Current Dow Jones Industrial Average constituents (30 tickers)."""
++        return self.constituents("dow")
++
++    def nasdaq100(self) -> pd.DataFrame:
++        """Current Nasdaq-100 constituents (about 101 tickers; some companies list two classes)."""
++        return self.constituents("nasdaq100")
++
++
++def nasdaq_listed(reference: pd.DataFrame, ticker_type: str = "CS") -> pd.DataFrame:
++    """Every active stock whose primary exchange is Nasdaq, from a Massive reference frame.
++
++    This is the whole exchange, not the Nasdaq-100. It is derived from a frame returned by
++    `MassiveSource.list_tickers(market="stocks")` so that one paginated pull can feed both this
++    and `attach_massive_reference`.
++
++    Args:
++        reference: A frame from `MassiveSource.list_tickers`.
++        ticker_type: Massive ticker type to keep. "CS" is common stock, which leaves out ETFs,
++            ADRs ("ADRC"), warrants and preferred shares. Pass None to keep every type.
++
++    Returns:
++        A frame with the columns in `UNIVERSE_COLUMNS`.
++    """
++    as_of = dt.date.today().isoformat()
++    source = "massive:/v3/reference/tickers (primary_exchange=XNAS"
++    source += f", type={ticker_type})" if ticker_type else ")"
++
++    records = []
++    for row in range(len(reference)):
++        if reference.iloc[row]["primary_exchange"] != "XNAS":
++            continue
++        if ticker_type and reference.iloc[row]["type"] != ticker_type:
++            continue
++        records.append(
++            {
++                "index": "nasdaq_listed",
++                "ticker": str(reference.iloc[row]["ticker"]).upper(),
++                "name": reference.iloc[row]["name"],
++                "sector": None,
++                "source": source,
++                "as_of": as_of,
++            }
++        )
++    return pd.DataFrame(records, columns=UNIVERSE_COLUMNS)
++
++
++def attach_massive_reference(universe: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
++    """Add Massive reference data to a universe frame.
++
++    Adds `in_massive` (True if Massive lists the ticker as active) and the columns in
++    `REFERENCE_FIELDS` (missing values where Massive doesn't list the ticker). A False
++    `in_massive` on a real constituent usually means a symbol-format mismatch or a very recent
++    listing change.
++
++    Args:
++        universe: A frame with a `ticker` column.
++        reference: A frame from `MassiveSource.list_tickers(market="stocks")`.
++
++    Returns:
++        A copy of `universe` with the extra columns.
++    """
++    position_by_ticker = {}
++    for row in range(len(reference)):
++        position_by_ticker[str(reference.iloc[row]["ticker"]).upper()] = row
++
++    in_massive = []
++    columns = {}
++    for field in REFERENCE_FIELDS:
++        columns[field] = []
++
++    for row in range(len(universe)):
++        position = position_by_ticker.get(universe.iloc[row]["ticker"])
++        if position is None:
++            in_massive.append(False)
++            for field in REFERENCE_FIELDS:
++                columns[field].append(None)
++        else:
++            in_massive.append(True)
++            for field in REFERENCE_FIELDS:
++                columns[field].append(reference.iloc[position][field])
++
++    result = universe.copy()
++    result["in_massive"] = in_massive
++    for field in REFERENCE_FIELDS:
++        result[field] = columns[field]
++    return result
++
++
++def collect_universes(
++    indexes: Sequence[str] = ALL_INDEXES,
++    massive: Optional[MassiveSource] = None,
++    wiki: Optional[IndexUniverseSource] = None,
++    save: bool = False,
++    out_dir: Optional[str] = None,
++) -> Dict[str, pd.DataFrame]:
++    """Collect several universes in one call.
++
++    If `massive` is given, its active-stock reference list is pulled once and used to add
++    Massive reference columns to every universe and to build `nasdaq_listed`. Without it,
++    only the Wikipedia-based indexes can be collected and they carry no Massive columns.
++
++    Args:
++        indexes: Names from `ALL_INDEXES`.
++        massive: A `MassiveSource`. Required if "nasdaq_listed" is requested.
++        wiki: An `IndexUniverseSource` (injectable for tests). Defaults to a fresh one.
++        save: If True, write each universe to parquet with `save_universe`.
++        out_dir: Directory for saved files; see `save_universe`.
++
++    Returns:
++        A dict mapping index name to its universe frame.
++    """
++    for name in indexes:
++        if name not in ALL_INDEXES:
++            raise ValueError(f"Unknown index {name!r}; expected one of {ALL_INDEXES}")
++    if "nasdaq_listed" in indexes and massive is None:
++        raise ValueError(
++            "'nasdaq_listed' comes from Massive reference data; pass massive=MassiveSource()"
++        )
++
++    reference = None
++    if massive is not None:
++        reference = massive.list_tickers(market="stocks", active=True)
++    if wiki is None:
++        wiki = IndexUniverseSource()
++
++    universes = {}
++    for name in indexes:
++        if name == "nasdaq_listed":
++            frame = nasdaq_listed(reference)
++        else:
++            frame = wiki.constituents(name)
++        if reference is not None:
++            frame = attach_massive_reference(frame, reference)
++        universes[name] = frame
++        if save:
++            save_universe(frame, name, out_dir)
++    return universes
++
++
++def all_tickers(universes: Dict[str, pd.DataFrame]) -> List[str]:
++    """Sorted, de-duplicated union of tickers across universes, e.g. as input to `precompute`."""
++    tickers = set()
++    for frame in universes.values():
++        for ticker in frame["ticker"].tolist():
++            tickers.add(ticker)
++    return sorted(tickers)
++
++
++def _default_universe_dir() -> Path:
++    return Path(config.get_data_dir()) / "raw" / "universe"
++
++
++def save_universe(frame: pd.DataFrame, name: str, out_dir: Optional[str] = None) -> str:
++    """Write a universe to `<out_dir>/<name>_<YYYY-MM-DD>.parquet` and return the path.
++
++    Args:
++        frame: A universe frame.
++        name: Index name, e.g. "sp500".
++        out_dir: Destination directory. Defaults to `<config.get_data_dir()>/raw/universe`.
++    """
++    directory = Path(out_dir) if out_dir else _default_universe_dir()
++    directory.mkdir(parents=True, exist_ok=True)
++    path = directory / f"{name}_{dt.date.today().isoformat()}.parquet"
++    frame.to_parquet(path, index=False)
++    return str(path)
++
++
++def load_universe(name: str, out_dir: Optional[str] = None) -> pd.DataFrame:
++    """Read the most recent saved universe called `name` (see `save_universe`).
++
++    Raises:
++        FileNotFoundError: If no saved file exists for `name`.
++    """
++    directory = Path(out_dir) if out_dir else _default_universe_dir()
++    matches = sorted(directory.glob(f"{name}_*.parquet"))  # ISO dates sort chronologically
++    if not matches:
++        raise FileNotFoundError(f"No saved universe named {name!r} in {directory}")
++    return pd.read_parquet(matches[-1])
++
++
++def main(argv: Optional[Sequence[str]] = None) -> int:
++    """Command-line entry point: collect universes, save them, print a short summary."""
++    parser = argparse.ArgumentParser(
++        description="Collect S&P 500, Dow, Nasdaq-100 and Nasdaq-listed universes."
++    )
++    parser.add_argument(
++        "--indexes",
++        nargs="+",
++        choices=ALL_INDEXES,
++        default=None,
++        help="Universes to collect. Default: all four (or the three Wikipedia ones with "
++        "--skip-massive).",
++    )
++    parser.add_argument("--out-dir", default=None, help="Where to write parquet files.")
++    parser.add_argument("--config", default="config/config.yaml", help="Path to config YAML.")
++    parser.add_argument(
++        "--skip-massive",
++        action="store_true",
++        help="Don't call Massive: constituents only, no reference columns, no nasdaq_listed.",
++    )
++    args = parser.parse_args(argv)
++
++    config.load_yaml(args.config)
++    indexes = args.indexes
++    if indexes is None:
++        indexes = WIKI_INDEXES if args.skip_massive else ALL_INDEXES
++
++    try:
++        massive = None
++        if not args.skip_massive:
++            massive = MassiveSource()
++            # Cheap single call so a bad key or base URL fails now, not after a long pull.
++            massive.ticker_details("AAPL")
++        universes = collect_universes(indexes, massive=massive, save=True, out_dir=args.out_dir)
++    except (ValueError, DataSourceError, requests.RequestException) as exc:
++        print(f"error: {exc}", file=sys.stderr)
++        return 1
++
++    for name, frame in universes.items():
++        print(f"{name}: {len(frame)} tickers")
++        if "in_massive" in frame.columns:
++            missing = []
++            for row in range(len(frame)):
++                if not frame.iloc[row]["in_massive"]:
++                    missing.append(frame.iloc[row]["ticker"])
++            if missing:
++                print(f"  not found in Massive: {', '.join(missing)}")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/data_universe/sources/massive.py b/data_universe/sources/massive.py
+new file mode 100644
+index 0000000..b7b12ca
+--- /dev/null
++++ b/data_universe/sources/massive.py
+@@ -0,0 +1,130 @@
++"""Massive (formerly Polygon.io) market data.
++
++Polygon.io rebranded as Massive on 2025-10-30. The REST API is the same -- same paths,
++same `Authorization: Bearer <key>` auth -- but the host is now `api.massive.com`
++(`api.polygon.io` is still served for an extended period) and existing Polygon keys keep
++working. `MassiveSource` is therefore `PolygonSource` pointed at the Massive host, so it
++inherits `daily_bars`, `hourly_bars`, `index_daily_bars`, the 429 retry/backoff and the
++cache, and adds the two reference-data calls the universe collector needs:
++`list_tickers` and `ticker_details`.
++
++Key lookup: `config.get_massive_key()` first (env `MASSIVE_API_KEY`), then the Polygon key
++(env `POLYGON_API_KEY`). The key is only ever sent as a Bearer header, never in a URL.
++
++The endpoint paths and response fields below follow Massive's REST docs
++(`/v3/reference/tickers`, `/v3/reference/tickers/{ticker}`) but are mocked in every test,
++never called live from CI -- see `OPEN_QUESTIONS.md` item 15.
++"""
++from __future__ import annotations
++
++import pandas as pd
++
++from data_universe import config
++from data_universe.cache import cached
++from data_universe.sources.polygon import PolygonSource
++
++TICKER_COLUMNS = [
++    "ticker",
++    "name",
++    "market",
++    "type",
++    "primary_exchange",
++    "active",
++    "cik",
++    "composite_figi",
++    "share_class_figi",
++    "currency_name",
++    "last_updated_utc",
++]
++
++
++class MassiveSource(PolygonSource):
++    """Stock/index aggregates (inherited) and ticker reference data from Massive.
++
++    Args:
++        session: An injectable `requests.Session` (for tests). Defaults to a fresh
++            pooled session.
++        max_retries: Max number of 429 retries before raising `RateLimitedError`.
++        backoff_seconds: Base backoff in seconds, doubled on each retry.
++    """
++
++    def _base_url(self) -> str:
++        return config.get_massive_base_url()
++
++    def _headers(self) -> dict:
++        key = config.get_massive_key() or config.get_polygon_key()
++        if key is None:
++            raise ValueError(
++                "Massive API key not set. Call config.set_massive_key() "
++                "or set the MASSIVE_API_KEY environment variable."
++            )
++        return {"Authorization": f"Bearer {key}"}
++
++    @cached("list_tickers")
++    def list_tickers(
++        self,
++        market: str = "stocks",
++        ticker_type: str = None,
++        exchange: str = None,
++        active: bool = True,
++    ) -> pd.DataFrame:
++        """List reference tickers, following `next_url` pagination (1000 per page).
++
++        With no filters beyond `market`, this returns every active ticker in the market
++        (stocks, ETFs, ADRs, warrants, ...), which takes on the order of ten to fifteen
++        requests. On a rate-limited plan those requests are retried on 429 with backoff.
++
++        Args:
++            market: Massive market, e.g. "stocks", "indices".
++            ticker_type: Optional Massive ticker type code, e.g. "CS" (common stock),
++                "ADRC", "ETF". None means all types.
++            exchange: Optional primary-exchange MIC (ISO 10383), e.g. "XNAS" or "XNYS".
++                None means all exchanges.
++            active: True for currently active tickers, False for delisted ones.
++
++        Returns:
++            A frame with one row per ticker and the columns in `TICKER_COLUMNS`
++            (a field Massive omits for a ticker is missing).
++        """
++        url = f"{self._base_url()}/v3/reference/tickers"
++        params = {
++            "market": market,
++            "active": "true" if active else "false",
++            "sort": "ticker",
++            "order": "asc",
++            "limit": 1000,
++        }
++        if ticker_type:
++            params["type"] = ticker_type
++        if exchange:
++            params["exchange"] = exchange
++
++        results: list = []
++        while url:
++            data = self._get(url, params=params)
++            results.extend(data.get("results") or [])
++            url = data.get("next_url")
++            params = None  # next_url already carries its own cursor/query string
++
++        records = []
++        for result in results:
++            record = {}
++            for column in TICKER_COLUMNS:
++                record[column] = result.get(column)
++            records.append(record)
++        return pd.DataFrame(records, columns=TICKER_COLUMNS)
++
++    @cached("ticker_details")
++    def ticker_details(self, ticker: str) -> dict:
++        """Reference details for one ticker (name, primary exchange, CIK, FIGIs, SIC, ...).
++
++        Also a cheap way to check that the key and base URL work before a big pull.
++
++        Args:
++            ticker: Ticker symbol, e.g. "AAPL".
++
++        Returns:
++            The `results` object from the API, as a dict (empty if absent).
++        """
++        data = self._get(f"{self._base_url()}/v3/reference/tickers/{ticker}")
++        return data.get("results") or {}
+diff --git a/data_universe/sources/polygon.py b/data_universe/sources/polygon.py
+index e48ba38..cf787b6 100644
+--- a/data_universe/sources/polygon.py
++++ b/data_universe/sources/polygon.py
+@@ -47,6 +47,10 @@ class PolygonSource(DataSource):
+         self._max_retries = max_retries
+         self._backoff_seconds = backoff_seconds
+ 
++    def _base_url(self) -> str:
++        """REST base URL for this source. Subclasses override this to target another host."""
++        return config.get_polygon_base_url()
++
+     def _headers(self) -> dict:
+         key = config.get_polygon_key()
+         if key is None:
+@@ -73,7 +77,7 @@ class PolygonSource(DataSource):
+         """Fetch one (ticker, window) range request's worth of aggregates,
+         following `next_url` pagination.
+         """
+-        base = config.get_polygon_base_url()
++        base = self._base_url()
+         url = f"{base}/v2/aggs/ticker/{ticker}/range/1/{timespan}/{start}/{end}"
+         params = {"adjusted": "true", "sort": "asc", "limit": 50000}
+         rows: list = []
+diff --git a/requirements.txt b/requirements.txt
+index 2f84af1..b051c37 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -4,3 +4,4 @@ requests
+ pyarrow
+ scipy
+ pyyaml
++lxml
+diff --git a/setup.py b/setup.py
+index 6295b46..2bc5753 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1,6 +1,6 @@
+ from setuptools import setup
+ 
+-VERSION = "0.2.0"
++VERSION = "0.3.0"
+ DESCRIPTION = "GTSF Quant Sector shared data and feature library."
+ 
+ setup(
+@@ -22,6 +22,7 @@ setup(
+         "pyarrow",
+         "scipy",
+         "pyyaml",
++        "lxml",
+     ],
+     extras_require={
+         "sec": [
+diff --git a/tests/test_config.py b/tests/test_config.py
+index cd640e4..0b2d95d 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -72,3 +72,29 @@ def test_load_yaml_missing_file_is_a_noop(tmp_path):
+ 
+ def test_data_dir_default_is_under_package_parent():
+     assert config.get_data_dir().endswith("data")
++
++
++def test_massive_defaults(monkeypatch):
++    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
++    monkeypatch.delenv("MASSIVE_BASE_URL", raising=False)
++    config.reset()
++    assert config.get_massive_key() is None
++    assert config.get_massive_base_url() == "https://api.massive.com"
++
++
++def test_massive_setters():
++    config.set_massive_key("k")
++    config.set_massive_base_url("https://example.test")
++    assert config.get_massive_key() == "k"
++    assert config.get_massive_base_url() == "https://example.test"
++
++
++def test_load_yaml_sets_massive_values(tmp_path, monkeypatch):
++    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
++    monkeypatch.delenv("MASSIVE_BASE_URL", raising=False)
++    config.reset()
++    yaml_path = tmp_path / "config.yaml"
++    yaml_path.write_text("massive_api_key: from-yaml\nmassive_base_url: https://yaml.test\n")
++    config.load_yaml(str(yaml_path))
++    assert config.get_massive_key() == "from-yaml"
++    assert config.get_massive_base_url() == "https://yaml.test"
+diff --git a/tests/test_sources_index_universe.py b/tests/test_sources_index_universe.py
+new file mode 100644
+index 0000000..de8d0f2
+--- /dev/null
++++ b/tests/test_sources_index_universe.py
+@@ -0,0 +1,473 @@
++from unittest.mock import Mock
++
++import pandas as pd
++import pytest
++
++from data_universe import config
++from data_universe.cache import reset_cache
++from data_universe.sources import index_universe as iu
++from data_universe.sources.massive import TICKER_COLUMNS
++
++
++@pytest.fixture(autouse=True)
++def _reset_state(monkeypatch):
++    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
++    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
++    config.reset()
++    reset_cache()
++    yield
++    config.reset()
++    reset_cache()
++
++
++# --- HTML fixtures shaped like the real Wikipedia tables -------------------------------------
++
++
++def _table(headers, rows):
++    head = "".join(f"<th>{h}</th>" for h in headers)
++    body = ""
++    for row in rows:
++        body += "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
++    return (
++        '<table class="wikitable sortable">'
++        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
++    )
++
++
++def _page(*tables):
++    return "<html><body>" + "".join(tables) + "</body></html>"
++
++
++# A change-log table with a two-row header, like the ones under the Nasdaq-100 and S&P 500 lists.
++_CHANGES_TABLE = (
++    '<table class="wikitable"><thead>'
++    '<tr><th rowspan="2">Date</th><th colspan="2">Added</th><th colspan="2">Removed</th>'
++    '<th rowspan="2">Reason</th></tr>'
++    "<tr><th>Ticker</th><th>Security</th><th>Ticker</th><th>Security</th></tr></thead>"
++    "<tbody><tr><td>June 22, 2026</td><td>ALAB</td><td>Astera Labs</td><td>CHTR</td>"
++    "<td>Charter</td><td>Reconstitution</td></tr></tbody></table>"
++)
++
++_SP500_HEADERS = [
++    "Symbol",
++    "Security",
++    "GICS Sector",
++    "GICS Sub-Industry",
++    "Headquarters Location",
++    "Date added",
++    "CIK",
++    "Founded",
++]
++
++
++def _sp500_row(symbol, name, sector, sub_industry="Building Products"):
++    return [symbol, name, sector, sub_industry, "HQ", "2020-01-01", "0000000001", "1900"]
++
++
++def _sp500_rows(count=503):
++    rows = [
++        _sp500_row("MMM[a]", "3M", "Industrials"),  # footnote marker on the ticker cell
++        _sp500_row("BRK.B", "Berkshire Hathaway", "Financials"),
++        _sp500_row("BF.B", "Brown-Forman", "Consumer Staples"),
++        _sp500_row("GOOGL", "Alphabet Inc. (Class A)", "Communication Services"),
++        _sp500_row("GOOG", "Alphabet Inc. (Class C)", "Communication Services"),
++    ]
++    for i in range(count - len(rows)):
++        rows.append(_sp500_row(f"T{i:03d}", f"Company {i}", "Industrials"))
++    return rows
++
++
++_DOW_TICKERS = [
++    "MMM", "GOOGL", "AXP", "AMGN", "AMZN", "AAPL", "BA", "CAT", "CVX", "CSCO",
++    "KO", "DIS", "GS", "HD", "HON", "IBM", "JNJ", "JPM", "MCD", "MRK",
++    "MSFT", "NKE", "NVDA", "PG", "CRM", "SHW", "TRV", "UNH", "V", "WMT",
++]  # fmt: skip
++
++
++def _dow_rows():
++    rows = []
++    for ticker in _DOW_TICKERS:
++        rows.append([f"Co {ticker}", "NYSE", ticker, "Industrials", "1999-01-01", ""])
++    return rows
++
++
++def _nasdaq100_rows(count=101):
++    rows = [
++        ["GOOGL", "Alphabet Inc. (Class A)", "Technology", "Software"],
++        ["GOOG", "Alphabet Inc. (Class C)", "Technology", "Software"],
++        ["AAPL", "Apple Inc.", "Technology", "Computer Hardware"],
++        ["MSFT", "Microsoft", "Technology", "Software"],
++    ]
++    for i in range(count - len(rows)):
++        rows.append([f"N{i:03d}", f"Nasdaq Co {i}", "Health Care", "Biotechnology"])
++    return rows
++
++
++_DOW_HEADERS = ["Company", "Exchange", "Symbol", "Sector", "Date added", "Notes"]
++_NASDAQ_ICB_HEADERS = ["Ticker", "Company", "ICB Industry", "ICB Subsector"]
++_NASDAQ_GICS_HEADERS = ["Ticker", "Company", "GICS Sector", "GICS Sub-Industry"]
++
++
++class FakeResponse:
++    def __init__(self, text="", status_code=200):
++        self.text = text
++        self.status_code = status_code
++
++    def raise_for_status(self):
++        if self.status_code >= 400:
++            raise RuntimeError(f"HTTP {self.status_code}")
++
++
++# --- clean_ticker ----------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    "raw, expected",
++    [
++        ("BRK.B", "BRK.B"),
++        ("BRK-B", "BRK.B"),
++        ("  aapl ", "AAPL"),
++        ("MMM[1]", "MMM"),
++        ("NASDAQ: AAPL", "AAPL"),
++        ("\xa0", ""),
++        (float("nan"), ""),
++    ],
++)
++def test_clean_ticker(raw, expected):
++    assert iu.clean_ticker(raw) == expected
++
++
++# --- parse_constituents ----------------------------------------------------------------------
++
++
++def test_parse_sp500_normalizes_tickers_and_reads_sector():
++    html = _page(_table(_SP500_HEADERS, _sp500_rows()))
++    frame = iu.parse_constituents("sp500", html, "https://example.test/sp500")
++    assert list(frame.columns) == iu.UNIVERSE_COLUMNS
++    assert len(frame) == 503
++    tickers = frame["ticker"].tolist()
++    assert tickers[0] == "MMM"  # footnote marker stripped
++    assert "BRK.B" in tickers and "BF.B" in tickers
++    assert "GOOGL" in tickers and "GOOG" in tickers  # both share classes kept
++    row = frame.iloc[1]
++    assert row["index"] == "sp500"
++    assert row["name"] == "Berkshire Hathaway"
++    assert row["sector"] == "Financials"
++    assert row["source"] == "https://example.test/sp500"
++
++
++def test_parse_dow_uses_symbol_and_sector_columns():
++    frame = iu.parse_constituents("dow", _page(_table(_DOW_HEADERS, _dow_rows())))
++    assert len(frame) == 30
++    assert frame["ticker"].tolist() == _DOW_TICKERS
++    assert frame.iloc[0]["name"] == "Co MMM"
++    assert frame.iloc[0]["sector"] == "Industrials"
++
++
++def test_parse_dow_accepts_the_older_industry_header():
++    headers = ["Company", "Exchange", "Symbol", "Industry", "Date added", "Notes"]
++    frame = iu.parse_constituents("dow", _page(_table(headers, _dow_rows())))
++    assert frame.iloc[0]["sector"] == "Industrials"
++
++
++def test_parse_nasdaq100_with_icb_headers():
++    html = _page(_table(_NASDAQ_ICB_HEADERS, _nasdaq100_rows()))
++    frame = iu.parse_constituents("nasdaq100", html)
++    assert len(frame) == 101
++    assert frame.iloc[0]["ticker"] == "GOOGL"
++    assert frame.iloc[0]["sector"] == "Technology"
++
++
++def test_parse_nasdaq100_with_gics_headers():
++    html = _page(_table(_NASDAQ_GICS_HEADERS, _nasdaq100_rows()))
++    frame = iu.parse_constituents("nasdaq100", html)
++    assert len(frame) == 101
++    assert frame.iloc[2]["sector"] == "Technology"
++
++
++def test_parse_skips_decoy_tables_before_and_after_the_real_one():
++    small_decoy = _table(["Ticker", "Company"], [["ZZZ", "Decoy Inc."]])
++    real = _table(_NASDAQ_ICB_HEADERS, _nasdaq100_rows())
++    html = _page(small_decoy, _CHANGES_TABLE, real, _CHANGES_TABLE)
++    frame = iu.parse_constituents("nasdaq100", html)
++    assert len(frame) == 101
++    assert "ZZZ" not in frame["ticker"].tolist()
++
++
++def test_parse_drops_duplicate_tickers():
++    rows = _nasdaq100_rows()
++    rows[5] = list(rows[2])  # repeat AAPL; the frame should keep the first one only
++    frame = iu.parse_constituents("nasdaq100", _page(_table(_NASDAQ_ICB_HEADERS, rows)))
++    assert frame["ticker"].tolist().count("AAPL") == 1
++    assert len(frame) == 100
++
++
++def test_parse_wrong_row_count_raises_with_page_summary():
++    html = _page(_table(_SP500_HEADERS, _sp500_rows(count=40)))
++    with pytest.raises(iu.UniverseParseError, match="layout may have changed"):
++        iu.parse_constituents("sp500", html, "https://example.test/sp500")
++
++
++def test_parse_missing_ticker_column_raises():
++    headers = ["Company", "Exchange", "Sector", "Date added", "Notes"]
++    rows = []
++    for ticker in _DOW_TICKERS:
++        rows.append([f"Co {ticker}", "NYSE", "Industrials", "1999-01-01", ""])
++    with pytest.raises(iu.UniverseParseError):
++        iu.parse_constituents("dow", _page(_table(headers, rows)))
++
++
++def test_parse_page_without_tables_raises():
++    with pytest.raises(iu.UniverseParseError, match="no HTML tables"):
++        iu.parse_constituents("dow", "<html><body><p>Blocked</p></body></html>")
++
++
++def test_parse_malformed_ticker_raises():
++    rows = _dow_rows()
++    rows[3][2] = "not a ticker"
++    with pytest.raises(iu.UniverseParseError, match="unexpected ticker"):
++        iu.parse_constituents("dow", _page(_table(_DOW_HEADERS, rows)))
++
++
++def test_parse_unknown_index_raises():
++    with pytest.raises(ValueError):
++        iu.parse_constituents("russell2000", "<html></html>")
++
++
++# --- IndexUniverseSource ---------------------------------------------------------------------
++
++
++def test_source_fetches_the_right_url_with_a_user_agent():
++    session = Mock()
++    session.get.return_value = FakeResponse(_page(_table(_DOW_HEADERS, _dow_rows())))
++    source = iu.IndexUniverseSource(session=session, user_agent="test-agent (me@example.org)")
++    frame = source.dow()
++    assert len(frame) == 30
++    url = session.get.call_args[0][0]
++    assert url == "https://en.wikipedia.org/wiki/List_of_Dow_Jones_Industrial_Average_companies"
++    assert session.get.call_args[1]["headers"]["User-Agent"] == "test-agent (me@example.org)"
++    assert frame.iloc[0]["source"] == url
++
++
++def test_source_sp500_and_nasdaq100_helpers():
++    session = Mock()
++    session.get.side_effect = [
++        FakeResponse(_page(_table(_SP500_HEADERS, _sp500_rows()))),
++        FakeResponse(_page(_table(_NASDAQ_ICB_HEADERS, _nasdaq100_rows()))),
++    ]
++    source = iu.IndexUniverseSource(session=session)
++    assert len(source.sp500()) == 503
++    assert len(source.nasdaq100()) == 101
++    assert "List_of_S%26P_500_companies" in session.get.call_args_list[0][0][0]
++    assert session.get.call_args_list[1][0][0].endswith("/Nasdaq-100")
++
++
++def test_source_http_error_propagates():
++    session = Mock()
++    session.get.return_value = FakeResponse("", status_code=403)
++    with pytest.raises(RuntimeError):
++        iu.IndexUniverseSource(session=session).sp500()
++
++
++def test_source_unknown_index_raises():
++    with pytest.raises(ValueError):
++        iu.IndexUniverseSource(session=Mock()).constituents("nasdaq_listed")
++
++
++# --- Massive reference: nasdaq_listed and attach_massive_reference ----------------------------
++
++
++def _reference(*rows):
++    records = []
++    for ticker, exchange, ticker_type in rows:
++        record = {column: None for column in TICKER_COLUMNS}
++        record.update(
++            {
++                "ticker": ticker,
++                "name": f"{ticker} Inc.",
++                "market": "stocks",
++                "type": ticker_type,
++                "primary_exchange": exchange,
++                "active": True,
++                "cik": f"cik-{ticker}",
++                "composite_figi": f"figi-{ticker}",
++            }
++        )
++        records.append(record)
++    return pd.DataFrame(records, columns=TICKER_COLUMNS)
++
++
++_REFERENCE = _reference(
++    ("AAPL", "XNAS", "CS"),
++    ("MSFT", "XNAS", "CS"),
++    ("QQQ", "XNAS", "ETF"),
++    ("PDD", "XNAS", "ADRC"),
++    ("JPM", "XNYS", "CS"),
++)
++
++
++def test_nasdaq_listed_keeps_only_nasdaq_common_stock():
++    frame = iu.nasdaq_listed(_REFERENCE)
++    assert list(frame.columns) == iu.UNIVERSE_COLUMNS
++    assert frame["ticker"].tolist() == ["AAPL", "MSFT"]
++    assert frame.iloc[0]["index"] == "nasdaq_listed"
++    assert "XNAS" in frame.iloc[0]["source"]
++
++
++def test_nasdaq_listed_with_no_type_filter_keeps_etfs_and_adrs():
++    frame = iu.nasdaq_listed(_REFERENCE, ticker_type=None)
++    assert frame["ticker"].tolist() == ["AAPL", "MSFT", "QQQ", "PDD"]
++
++
++def _universe_row(index, ticker, name=None):
++    return {
++        "index": index,
++        "ticker": ticker,
++        "name": name or ticker,
++        "sector": None,
++        "source": "s",
++        "as_of": "d",
++    }
++
++
++def test_attach_massive_reference_flags_and_fills():
++    universe = pd.DataFrame(
++        [_universe_row("dow", "AAPL", "Apple"), _universe_row("dow", "GONE", "Gone Corp")]
++    )
++    result = iu.attach_massive_reference(universe, _REFERENCE)
++    assert result["in_massive"].tolist() == [True, False]
++    assert result.iloc[0]["primary_exchange"] == "XNAS"
++    assert result.iloc[0]["cik"] == "cik-AAPL"
++    assert pd.isna(result.iloc[1]["primary_exchange"])
++    assert "in_massive" not in universe.columns  # the input frame is left alone
++
++
++# --- collect_universes -----------------------------------------------------------------------
++
++
++class FakeWiki:
++    """Stands in for IndexUniverseSource so no HTTP happens."""
++
++    def __init__(self):
++        self.calls = []
++
++    def constituents(self, index):
++        self.calls.append(index)
++        tickers = {"sp500": ["AAPL", "JPM"], "dow": ["AAPL", "GONE"], "nasdaq100": ["MSFT"]}
++        records = []
++        for ticker in tickers[index]:
++            records.append(_universe_row(index, ticker))
++        return pd.DataFrame(records, columns=iu.UNIVERSE_COLUMNS)
++
++
++def _fake_massive(reference=_REFERENCE):
++    massive = Mock()
++    massive.list_tickers.return_value = reference
++    return massive
++
++
++def test_collect_universes_with_massive_pulls_reference_once():
++    massive = _fake_massive()
++    universes = iu.collect_universes(massive=massive, wiki=FakeWiki())
++    assert list(universes) == list(iu.ALL_INDEXES)
++    massive.list_tickers.assert_called_once_with(market="stocks", active=True)
++    assert universes["dow"]["in_massive"].tolist() == [True, False]
++    assert universes["nasdaq_listed"]["ticker"].tolist() == ["AAPL", "MSFT"]
++    assert universes["sp500"].iloc[1]["primary_exchange"] == "XNYS"
++
++
++def test_collect_universes_without_massive_has_no_reference_columns():
++    universes = iu.collect_universes(iu.WIKI_INDEXES, wiki=FakeWiki())
++    assert list(universes) == list(iu.WIKI_INDEXES)
++    assert "in_massive" not in universes["sp500"].columns
++
++
++def test_collect_universes_nasdaq_listed_requires_massive():
++    with pytest.raises(ValueError, match="massive"):
++        iu.collect_universes(["nasdaq_listed"], wiki=FakeWiki())
++
++
++def test_collect_universes_rejects_unknown_index():
++    with pytest.raises(ValueError, match="russell"):
++        iu.collect_universes(["russell"], wiki=FakeWiki())
++
++
++def test_collect_universes_only_fetches_requested_indexes():
++    wiki = FakeWiki()
++    iu.collect_universes(["dow"], wiki=wiki)
++    assert wiki.calls == ["dow"]
++
++
++def test_collect_universes_save_writes_parquet(tmp_path):
++    iu.collect_universes(["dow", "sp500"], wiki=FakeWiki(), save=True, out_dir=str(tmp_path))
++    names = sorted(p.name for p in tmp_path.iterdir())
++    assert len(names) == 2
++    assert names[0].startswith("dow_") and names[1].startswith("sp500_")
++
++
++def test_all_tickers_is_a_sorted_union():
++    universes = iu.collect_universes(iu.WIKI_INDEXES, wiki=FakeWiki())
++    assert iu.all_tickers(universes) == ["AAPL", "GONE", "JPM", "MSFT"]
++
++
++# --- save / load -----------------------------------------------------------------------------
++
++
++def test_save_and_load_round_trip(tmp_path):
++    frame = FakeWiki().constituents("sp500")
++    path = iu.save_universe(frame, "sp500", str(tmp_path))
++    assert path.endswith(".parquet")
++    loaded = iu.load_universe("sp500", str(tmp_path))
++    assert loaded["ticker"].tolist() == ["AAPL", "JPM"]
++
++
++def test_load_universe_returns_the_newest_file(tmp_path):
++    newest = FakeWiki().constituents("sp500")
++    iu.save_universe(newest, "sp500", str(tmp_path))
++    older = newest.iloc[:1]
++    older.to_parquet(tmp_path / "sp500_2020-01-01.parquet", index=False)
++    assert iu.load_universe("sp500", str(tmp_path))["ticker"].tolist() == ["AAPL", "JPM"]
++
++
++def test_load_universe_missing_raises(tmp_path):
++    with pytest.raises(FileNotFoundError):
++        iu.load_universe("sp500", str(tmp_path))
++
++
++def test_save_defaults_to_the_configured_data_dir(tmp_path):
++    config.set_data_dir(str(tmp_path))
++    path = iu.save_universe(FakeWiki().constituents("dow"), "dow")
++    assert path.startswith(str(tmp_path / "raw" / "universe"))
++
++
++# --- command line ----------------------------------------------------------------------------
++
++
++def test_main_skip_massive_collects_the_three_wikipedia_indexes(tmp_path, monkeypatch, capsys):
++    monkeypatch.setattr(iu, "IndexUniverseSource", FakeWiki)
++    code = iu.main(
++        ["--skip-massive", "--out-dir", str(tmp_path), "--config", str(tmp_path / "none.yaml")]
++    )
++    assert code == 0
++    output = capsys.readouterr().out
++    assert "sp500: 2 tickers" in output
++    assert "nasdaq_listed" not in output
++    assert len(list(tmp_path.glob("*.parquet"))) == 3
++
++
++def test_main_with_massive_reports_tickers_missing_from_massive(tmp_path, monkeypatch, capsys):
++    fake_massive = _fake_massive()
++    monkeypatch.setattr(iu, "IndexUniverseSource", FakeWiki)
++    monkeypatch.setattr(iu, "MassiveSource", lambda: fake_massive)
++    code = iu.main(["--out-dir", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
++    assert code == 0
++    fake_massive.ticker_details.assert_called_once_with("AAPL")
++    output = capsys.readouterr().out
++    assert "not found in Massive: GONE" in output
++    assert "nasdaq_listed: 2 tickers" in output
++
++
++def test_main_without_a_key_fails_cleanly(tmp_path, capsys):
++    code = iu.main(["--out-dir", str(tmp_path), "--config", str(tmp_path / "none.yaml")])
++    assert code == 1
++    assert "MASSIVE_API_KEY" in capsys.readouterr().err
+diff --git a/tests/test_sources_massive.py b/tests/test_sources_massive.py
+new file mode 100644
+index 0000000..7c0b919
+--- /dev/null
++++ b/tests/test_sources_massive.py
+@@ -0,0 +1,194 @@
++from unittest.mock import Mock
++
++import pandas as pd
++import pytest
++
++from data_universe import config
++from data_universe.cache import reset_cache
++from data_universe.sources.base import RateLimitedError
++from data_universe.sources.massive import TICKER_COLUMNS, MassiveSource
++
++
++@pytest.fixture(autouse=True)
++def _reset_state():
++    config.reset()
++    reset_cache()
++    config.set_massive_key("massive-key")
++    yield
++    config.reset()
++    reset_cache()
++
++
++class FakeResponse:
++    def __init__(self, status_code=200, json_data=None):
++        self.status_code = status_code
++        self._json_data = json_data or {}
++
++    def json(self):
++        return self._json_data
++
++    def raise_for_status(self):
++        if self.status_code >= 400 and self.status_code != 429:
++            raise RuntimeError(f"HTTP {self.status_code}")
++
++
++def _ticker(symbol, exchange="XNAS", ticker_type="CS", name=None):
++    return {
++        "ticker": symbol,
++        "name": name or f"{symbol} Inc.",
++        "market": "stocks",
++        "type": ticker_type,
++        "primary_exchange": exchange,
++        "active": True,
++        "cik": "0000000001",
++        "composite_figi": f"BBG{symbol}",
++        "share_class_figi": f"BBGS{symbol}",
++        "currency_name": "usd",
++        "last_updated_utc": "2026-09-01T00:00:00Z",
++        "locale": "us",  # an extra field the frame should ignore
++    }
++
++
++def test_defaults_to_the_massive_host():
++    assert config.get_massive_base_url() == "https://api.massive.com"
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    MassiveSource(session=session).list_tickers()
++    assert session.get.call_args[0][0] == "https://api.massive.com/v3/reference/tickers"
++
++
++def test_sends_bearer_header_not_url_param():
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    MassiveSource(session=session).list_tickers()
++    _, kwargs = session.get.call_args
++    assert kwargs["headers"]["Authorization"] == "Bearer massive-key"
++    assert "apiKey" not in (kwargs.get("params") or {})
++    assert "apiKey" not in session.get.call_args[0][0]
++
++
++def test_falls_back_to_the_polygon_key():
++    config.set_massive_key(None)
++    config.set_polygon_key("polygon-key")
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    MassiveSource(session=session).list_tickers()
++    assert session.get.call_args[1]["headers"]["Authorization"] == "Bearer polygon-key"
++
++
++def test_massive_key_wins_over_the_polygon_key():
++    config.set_polygon_key("polygon-key")
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    MassiveSource(session=session).list_tickers()
++    assert session.get.call_args[1]["headers"]["Authorization"] == "Bearer massive-key"
++
++
++def test_raises_without_any_key():
++    config.set_massive_key(None)
++    with pytest.raises(ValueError, match="MASSIVE_API_KEY"):
++        MassiveSource(session=Mock()).list_tickers()
++
++
++def test_env_var_seeds_the_key(monkeypatch):
++    monkeypatch.setenv("MASSIVE_API_KEY", "from-env")
++    monkeypatch.setenv("MASSIVE_BASE_URL", "https://example.test")
++    config.reset()
++    assert config.get_massive_key() == "from-env"
++    assert config.get_massive_base_url() == "https://example.test"
++
++
++def test_list_tickers_sends_filters_and_parses_columns():
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": [_ticker("AAPL")]})
++    frame = MassiveSource(session=session).list_tickers(
++        market="stocks", ticker_type="CS", exchange="XNAS", active=True
++    )
++    params = session.get.call_args[1]["params"]
++    assert params["market"] == "stocks"
++    assert params["type"] == "CS"
++    assert params["exchange"] == "XNAS"
++    assert params["active"] == "true"
++    assert params["limit"] == 1000
++    assert list(frame.columns) == TICKER_COLUMNS
++    assert frame.iloc[0]["ticker"] == "AAPL"
++    assert frame.iloc[0]["primary_exchange"] == "XNAS"
++
++
++def test_list_tickers_omits_unset_filters():
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    MassiveSource(session=session).list_tickers()
++    params = session.get.call_args[1]["params"]
++    assert "type" not in params
++    assert "exchange" not in params
++
++
++def test_list_tickers_follows_next_url_and_drops_params_on_later_pages():
++    next_url = "https://api.massive.com/v3/reference/tickers?cursor=abc"
++    session = Mock()
++    session.get.side_effect = [
++        FakeResponse(200, {"results": [_ticker("AAA")], "next_url": next_url}),
++        FakeResponse(200, {"results": [_ticker("BBB")]}),
++    ]
++    frame = MassiveSource(session=session).list_tickers()
++    assert frame["ticker"].tolist() == ["AAA", "BBB"]
++    assert session.get.call_count == 2
++    assert session.get.call_args_list[1][0][0] == next_url
++    assert session.get.call_args_list[1][1]["params"] is None
++
++
++def test_list_tickers_empty_returns_typed_empty_frame():
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": []})
++    frame = MassiveSource(session=session).list_tickers()
++    assert frame.empty
++    assert list(frame.columns) == TICKER_COLUMNS
++
++
++def test_list_tickers_missing_field_is_missing_not_an_error():
++    thin = {"ticker": "XYZ", "name": "XYZ Corp"}
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": [thin]})
++    frame = MassiveSource(session=session).list_tickers()
++    assert pd.isna(frame.iloc[0]["cik"])
++
++
++def test_list_tickers_is_cached():
++    session = Mock()
++    session.get.return_value = FakeResponse(200, {"results": [_ticker("AAPL")]})
++    source = MassiveSource(session=session)
++    source.list_tickers(market="stocks")
++    source.list_tickers(market="stocks")
++    assert session.get.call_count == 1
++
++
++def test_ticker_details_returns_results_object():
++    session = Mock()
++    session.get.return_value = FakeResponse(
++        200, {"results": {"ticker": "AAPL", "primary_exchange": "XNAS"}, "status": "OK"}
++    )
++    details = MassiveSource(session=session).ticker_details("AAPL")
++    assert details["primary_exchange"] == "XNAS"
++    assert session.get.call_args[0][0] == "https://api.massive.com/v3/reference/tickers/AAPL"
++
++
++def test_inherited_daily_bars_use_the_massive_host():
++    ts_ms = int(pd.Timestamp("2024-01-02", tz="America/New_York").timestamp() * 1000)
++    session = Mock()
++    session.get.return_value = FakeResponse(
++        200, {"results": [{"t": ts_ms, "o": 1, "h": 2, "l": 1, "c": 2, "v": 10, "vw": 1.5}]}
++    )
++    bars = MassiveSource(session=session).daily_bars("AAPL", "2024-01-02", "2024-01-02")
++    assert len(bars) == 1
++    url = session.get.call_args[0][0]
++    assert url.startswith("https://api.massive.com/v2/aggs/ticker/AAPL/range/1/day/")
++
++
++def test_inherited_429_retry_then_rate_limited_error(monkeypatch):
++    monkeypatch.setattr("data_universe.sources.polygon.time.sleep", lambda s: None)
++    session = Mock()
++    session.get.return_value = FakeResponse(429)
++    source = MassiveSource(session=session, max_retries=2, backoff_seconds=0.01)
++    with pytest.raises(RateLimitedError):
++        source.list_tickers()

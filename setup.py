@@ -1,6 +1,6 @@
 from setuptools import setup
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 DESCRIPTION = "GTSF Quant Sector shared data and feature library."
 
 setup(
@@ -22,6 +22,7 @@ setup(
         "pyarrow",
         "scipy",
         "pyyaml",
+        "lxml",
     ],
     extras_require={
         "sec": [

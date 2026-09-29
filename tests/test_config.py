@@ -72,3 +72,29 @@ def test_load_yaml_missing_file_is_a_noop(tmp_path):
 
 def test_data_dir_default_is_under_package_parent():
     assert config.get_data_dir().endswith("data")
+
+
+def test_massive_defaults(monkeypatch):
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("MASSIVE_BASE_URL", raising=False)
+    config.reset()
+    assert config.get_massive_key() is None
+    assert config.get_massive_base_url() == "https://api.massive.com"
+
+
+def test_massive_setters():
+    config.set_massive_key("k")
+    config.set_massive_base_url("https://example.test")
+    assert config.get_massive_key() == "k"
+    assert config.get_massive_base_url() == "https://example.test"
+
+
+def test_load_yaml_sets_massive_values(tmp_path, monkeypatch):
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("MASSIVE_BASE_URL", raising=False)
+    config.reset()
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("massive_api_key: from-yaml\nmassive_base_url: https://yaml.test\n")
+    config.load_yaml(str(yaml_path))
+    assert config.get_massive_key() == "from-yaml"
+    assert config.get_massive_base_url() == "https://yaml.test"
