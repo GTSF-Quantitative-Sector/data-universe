@@ -14,6 +14,7 @@ from typing import Optional
 _DEFAULT_DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
 _DEFAULT_CACHE_SIZE = 256
 _DEFAULT_POLYGON_BASE_URL = "https://api.polygon.io"
+_DEFAULT_MASSIVE_BASE_URL = "https://api.massive.com"
 
 # Maps internal state keys to the environment variable that seeds them.
 _ENV_VARS = {
@@ -22,6 +23,8 @@ _ENV_VARS = {
     "polygon_flatfiles_endpoint": "POLYGON_FLATFILES_ENDPOINT",
     "polygon_s3_access_key": "POLYGON_S3_ACCESS_KEY",
     "polygon_s3_secret_key": "POLYGON_S3_SECRET_KEY",
+    "massive_key": "MASSIVE_API_KEY",
+    "massive_base_url": "MASSIVE_BASE_URL",
     "fred_key": "FRED_API_KEY",
     "data_dir": "DATA_UNIVERSE_DATA_DIR",
     "cache_size": "DATA_UNIVERSE_CACHE_SIZE",
@@ -34,6 +37,8 @@ _YAML_KEYS = {
     "polygon_flatfiles_endpoint": "polygon_flatfiles_endpoint",
     "polygon_s3_access_key": "polygon_s3_access_key",
     "polygon_s3_secret_key": "polygon_s3_secret_key",
+    "massive_api_key": "massive_key",
+    "massive_base_url": "massive_base_url",
     "fred_api_key": "fred_key",
     "data_dir": "data_dir",
     "cache_size": "cache_size",
@@ -66,6 +71,8 @@ def reset() -> None:
     _state["polygon_flatfiles_endpoint"] = _default("polygon_flatfiles_endpoint", None)
     _state["polygon_s3_access_key"] = _default("polygon_s3_access_key", None)
     _state["polygon_s3_secret_key"] = _default("polygon_s3_secret_key", None)
+    _state["massive_key"] = _default("massive_key", None)
+    _state["massive_base_url"] = _default("massive_base_url", _DEFAULT_MASSIVE_BASE_URL)
     _state["fred_key"] = _default("fred_key", None)
     _state["data_dir"] = _default("data_dir", _DEFAULT_DATA_DIR)
     _state["cache_size"] = _default("cache_size", _DEFAULT_CACHE_SIZE)
@@ -132,6 +139,36 @@ def set_polygon_s3_secret_key(key: str) -> None:
 def get_polygon_s3_secret_key() -> Optional[str]:
     """Return the configured S3 secret key, or None if unset."""
     return _state["polygon_s3_secret_key"]
+
+
+def set_massive_key(key: str) -> None:
+    """Set the Massive (formerly Polygon.io) API key. Sent as an `Authorization: Bearer`
+    header, never a URL param. If unset, `MassiveSource` falls back to the Polygon key,
+    since existing Polygon.io keys keep working on Massive.
+
+    Args:
+        key: Massive API key.
+    """
+    _state["massive_key"] = key
+
+
+def get_massive_key() -> Optional[str]:
+    """Return the configured Massive API key, or None if unset."""
+    return _state["massive_key"]
+
+
+def set_massive_base_url(url: str) -> None:
+    """Set the Massive REST base URL (default `https://api.massive.com`).
+
+    Args:
+        url: Base URL, no trailing slash.
+    """
+    _state["massive_base_url"] = url
+
+
+def get_massive_base_url() -> str:
+    """Return the configured Massive REST base URL."""
+    return _state["massive_base_url"]
 
 
 def set_fred_key(key: str) -> None:

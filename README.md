@@ -66,6 +66,12 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   `sp500(query_date=...)` and `fundamentals(ticker)`), and `fakes.FakePolygonSource` /
   `fakes.FakeMarket` — a deterministic synthetic market with a planted beta/alpha, used by
   the whole test suite and available to anyone without an API key.
+- **`sources/massive.py`** — `MassiveSource`, `PolygonSource` pointed at Massive (Polygon.io's
+  new name, host `api.massive.com`): the same bars methods plus `list_tickers` and
+  `ticker_details` reference data. Reads `MASSIVE_API_KEY`, falling back to the Polygon key.
+- **`sources/index_universe.py`** — collects the S&P 500, Dow 30, Nasdaq-100 and all
+  Nasdaq-listed stocks, cross-checks them against Massive, and saves them to parquet. See
+  "Index universes" below.
 - **`options/`** — `occ` (OCC ticker parse/build), `black_scholes` (price, vega,
   implied_vol), `chain` (`as_of`, `atm_strike`, `nearest_expiry_after`, `straddle`), and
   `iv30` — a documented `NotImplementedError` stub (owner: vrp-research data track).
@@ -85,6 +91,33 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   source=None)` batch-computes to parquet with upsert-on-rerun and per-pair failure
   isolation (`PrecomputeReport`), and `load_feature(name, tickers=None, out_dir=None)` reads
   the result back.
+
+## Index universes
+
+```bash
+python -m data_universe.sources.index_universe                 # S&P 500, Dow, Nasdaq-100, Nasdaq-listed
+python -m data_universe.sources.index_universe --skip-massive  # constituents only, no API key needed
+```
+
+```python
+import data_universe as q
+from data_universe.sources.index_universe import collect_universes, all_tickers, load_universe
+from data_universe.sources.massive import MassiveSource
+
+universes = collect_universes(massive=MassiveSource(), save=True)   # saves to <data_dir>/raw/universe
+universes["dow"][["ticker", "name", "in_massive", "primary_exchange"]]
+q.precompute(all_tickers(universes), ["rv_cc_21d"], "2024-01-01", "2024-06-01")
+load_universe("sp500")                                              # newest saved copy
+```
+
+`sp500`, `dow` and `nasdaq100` come from Wikipedia (Massive has index prices but no
+constituent lists); `nasdaq_listed` is every active Nasdaq-listed common stock from Massive
+reference data, which is not the Nasdaq-100. Massive is called once for the active-stock
+list (roughly a dozen paginated requests) and adds `in_massive`, `primary_exchange`, `type`,
+`cik` and FIGI columns to each universe. **These are today's memberships**: for backtests use
+`q.universe.sp500(query_date=...)`. To pull bars from the Massive host, use `MassiveSource`
+(it has the same `daily_bars`/`hourly_bars` methods as `PolygonSource`). See
+`OPEN_QUESTIONS.md` items 15-17.
 
 ## Frame conventions
 
@@ -107,6 +140,8 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `POLYGON_FLATFILES_ENDPOINT` | S3-compatible flat-files endpoint (read by `config.py`; no consumer built yet — see "Not yet implemented") |
 | `POLYGON_S3_ACCESS_KEY` | S3 access key for flat-files (same caveat) |
 | `POLYGON_S3_SECRET_KEY` | S3 secret key for flat-files (same caveat) |
+| `MASSIVE_API_KEY` | Massive API key (Bearer header). Falls back to `POLYGON_API_KEY` if unset |
+| `MASSIVE_BASE_URL` | Massive REST base URL (default `https://api.massive.com`) |
 | `FRED_API_KEY` | FRED API key, used by `sources.fred.FredSource` |
 | `DATA_UNIVERSE_DATA_DIR` | Root directory for raw/interim/processed data and cache logs |
 | `DATA_UNIVERSE_CACHE_SIZE` | Default `Cache` capacity (entry count) |

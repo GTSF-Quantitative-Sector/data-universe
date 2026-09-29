@@ -8,6 +8,9 @@ polygon_base_url: "https://api.polygon.io"
 polygon_flatfiles_endpoint: ""
 polygon_s3_access_key: ""
 polygon_s3_secret_key: ""
+# Massive is Polygon.io under its new name. Leave massive_api_key empty to reuse polygon_api_key.
+massive_api_key: ""
+massive_base_url: "https://api.massive.com"
 fred_api_key: ""
 data_dir: "data"
 cache_size: 256

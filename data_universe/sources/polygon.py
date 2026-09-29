@@ -47,6 +47,10 @@ class PolygonSource(DataSource):
         self._max_retries = max_retries
         self._backoff_seconds = backoff_seconds
 
+    def _base_url(self) -> str:
+        """REST base URL for this source. Subclasses override this to target another host."""
+        return config.get_polygon_base_url()
+
     def _headers(self) -> dict:
         key = config.get_polygon_key()
         if key is None:
@@ -73,7 +77,7 @@ class PolygonSource(DataSource):
         """Fetch one (ticker, window) range request's worth of aggregates,
         following `next_url` pagination.
         """
-        base = config.get_polygon_base_url()
+        base = self._base_url()
         url = f"{base}/v2/aggs/ticker/{ticker}/range/1/{timespan}/{start}/{end}"
         params = {"adjusted": "true", "sort": "asc", "limit": 50000}
         rows: list = []

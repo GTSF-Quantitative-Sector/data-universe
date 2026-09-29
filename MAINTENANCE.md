@@ -26,7 +26,7 @@ file's maintenance burden into this repo; just keep the `sec_parser` dependency
 
 ## 3. API keys
 
-Polygon, FRED, and (once `FlatFilesSource` is built — see `OPEN_QUESTIONS.md` item 12) S3
+Polygon/Massive, FRED, and (once `FlatFilesSource` is built — see `OPEN_QUESTIONS.md` item 12) S3
 flat-files credentials are read from environment variables or `config/config.yaml`
 (gitignored) — never committed, never logged (`config.py`'s module docstring). Rotate them
 per each project's own security policy; this repo has no key-rotation automation of its own.
@@ -44,3 +44,14 @@ floor pinned only locally doesn't help the next person who installs fresh.
 3.11, using only `sources/fakes.py` — no live API calls, no secrets required. If a new source
 module is added, keep it testable against a fake/mock the same way; don't make CI depend on
 a real API key.
+
+## 6. Index membership tables
+
+`sources/index_universe.py` scrapes current S&P 500, Dow and Nasdaq-100 membership from
+Wikipedia. If a run raises `UniverseParseError`, open the page named in the message and
+compare it with the accepted header names (`_TICKER_HEADERS`, `_NAME_HEADERS`,
+`_SECTOR_HEADERS`) and the row-count ranges (`_EXPECTED_ROWS`) in that module; Wikipedia has
+already renamed columns once. Re-run the collector after each S&P 500 or Nasdaq-100
+reconstitution if you rely on saved parquet files, since those are dated snapshots, and put a
+real contact address in the User-Agent default (`_DEFAULT_USER_AGENT`) before running it on a
+schedule.

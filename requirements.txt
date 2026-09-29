@@ -4,3 +4,4 @@ requests
 pyarrow
 scipy
 pyyaml
+lxml
