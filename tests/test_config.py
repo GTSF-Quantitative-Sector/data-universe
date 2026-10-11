@@ -130,3 +130,35 @@ def test_load_yaml_reads_cache_disk_dir(tmp_path):
     config.load_yaml(str(p))
     assert config.get_cache_disk_dir() == "/yaml/dir"
     assert config.get_cache_disk_size_limit() == 500
+
+
+def test_load_yaml_empty_cache_disk_dir_resolves_to_none(tmp_path):
+    # An empty string documents "disable this feature" (see config.example.yaml's
+    # comment) -- it must resolve to None, not the literal '' string.
+    p = tmp_path / "config.yaml"
+    p.write_text('cache_disk_dir: ""\n')
+    config.load_yaml(str(p))
+    assert config.get_cache_disk_dir() is None
+
+
+def test_load_yaml_empty_cache_disk_size_limit_resolves_to_none(tmp_path):
+    # Must not call int("") and raise.
+    p = tmp_path / "config.yaml"
+    p.write_text('cache_disk_size_limit_bytes: ""\n')
+    config.load_yaml(str(p))
+    assert config.get_cache_disk_size_limit() is None
+
+
+def test_load_yaml_whitespace_only_cache_disk_dir_resolves_to_none(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text('cache_disk_dir: "   "\n')
+    config.load_yaml(str(p))
+    assert config.get_cache_disk_dir() is None
+
+
+def test_load_yaml_example_config_file_does_not_raise():
+    # config/config.example.yaml ships with cache_disk_dir and
+    # cache_disk_size_limit_bytes both empty, documenting "leave empty to disable".
+    config.load_yaml("config/config.example.yaml")
+    assert config.get_cache_disk_dir() is None
+    assert config.get_cache_disk_size_limit() is None

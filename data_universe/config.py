@@ -263,7 +263,13 @@ def load_yaml(path: str = "config/config.yaml") -> None:
         if env_var and os.environ.get(env_var) is not None:
             continue  # environment variable wins
         value = data[yaml_key]
-        if state_key in ("cache_size", "cache_disk_size_limit"):
+        if state_key in ("cache_disk_dir", "cache_disk_size_limit"):
+            # These two keys document "leave empty to disable this feature" (see
+            # config/config.example.yaml); an empty/whitespace-only string means None,
+            # not a literal "" value, and must not reach int().
+            if isinstance(value, str) and value.strip() == "":
+                value = None
+        if state_key in ("cache_size", "cache_disk_size_limit") and value is not None:
             value = int(value)
         _state[state_key] = value
 

@@ -18,6 +18,20 @@ Known limitations (by design, not bugs):
   one slow call can't block lookups for other keys. The disk tier does not
   change this: two processes racing on the same miss can both load and both
   write to disk, with the second write winning.
+- No staleness/TTL story: unlike the in-memory-only cache this replaces, a
+  disk-persisted entry survives a process restart and is never automatically
+  invalidated. Two cases to watch for: a deploy that changes a source's
+  output shape (schema, units, a bug fix) leaves old-shaped entries on disk
+  that look like valid hits to the new code, and a range that includes
+  "today" can get cached mid-session and then keep being served as a stale
+  partial day after the session closes. There is no TTL or invalidation
+  mechanism here -- `clear()` or pointing `disk_dir` at a fresh directory
+  after such a deploy is the caller's responsibility.
+- `_normalize()`'s fallback for a set/frozenset whose elements aren't
+  mutually orderable uses iteration order, which can differ between Python
+  process runs under hash randomization (`PYTHONHASHSEED`). This can cause
+  silent cache misses across processes for that rare case -- reduced hit
+  rate, never wrong data.
 """
 from __future__ import annotations
 
@@ -140,8 +154,9 @@ class Cache:
     Args:
         capacity: Maximum number of in-memory entries. Defaults to
             `data_universe.config.get_cache_size()` when None.
-        disk_dir: Directory for the disk-backed second tier. None (default) keeps the
-            cache purely in-memory, matching this class's original behavior exactly.
+        disk_dir: Directory for the disk-backed second tier. None (default), or an empty
+            or whitespace-only string, keeps the cache purely in-memory, matching this
+            class's original behavior exactly.
         disk_size_limit: Byte size limit for the disk tier. None uses diskcache's own
             default. Ignored when `disk_dir` is None.
     """
@@ -161,7 +176,7 @@ class Cache:
         self._evictions = 0
         self._log: list = []
         self._disk: Optional[diskcache.Cache] = None
-        if disk_dir is not None:
+        if disk_dir is not None and disk_dir.strip() != "":
             kwargs = {}
             if disk_size_limit is not None:
                 kwargs["size_limit"] = disk_size_limit
@@ -222,8 +237,6 @@ class Cache:
                     self._disk_hits += 1
                 else:
                     self._misses += 1
-                    if self._disk is not None:
-                        self._disk.set(full_key, result)
             self._log.append(
                 {
                     "timestamp": pd.Timestamp.now(tz="UTC"),
@@ -236,6 +249,16 @@ class Cache:
                     "project": config.get_project(),
                 }
             )
+
+        # Disk I/O happens outside the lock -- diskcache's own `Cache` is already
+        # thread/process-safe, and a slow write here must not stall other threads'
+        # memory-only lookups. A failed write is treated as best-effort: the caller
+        # still gets the value they loaded, just without a disk copy of it.
+        if source == "load" and self._disk is not None:
+            try:
+                self._disk.set(full_key, result)
+            except Exception:
+                pass
         return _copy_value(result)
 
     def _disk_get(self, full_key: tuple) -> Optional[tuple]:
@@ -249,7 +272,11 @@ class Cache:
         return (value,)
 
     def clear(self) -> None:
-        """Drop every entry (memory and disk) and reset all counters and the access log."""
+        """Drop every entry (memory and disk) and reset all counters and the access log.
+
+        When a disk tier is configured, this empties the shared directory for every
+        process colocated on that same `disk_dir`, not just the caller.
+        """
         with self._lock:
             self._store.clear()
             self._hits = 0
@@ -257,8 +284,8 @@ class Cache:
             self._misses = 0
             self._evictions = 0
             self._log.clear()
-            if self._disk is not None:
-                self._disk.clear()
+        if self._disk is not None:
+            self._disk.clear()
 
     def stats(self) -> dict:
         """Return `{size, hits, disk_hits, misses, evictions, hit_rate, bytes_held,
@@ -269,11 +296,11 @@ class Cache:
         currently in-memory value; `disk_bytes_held` is the disk tier's reported size (0
         when no disk tier is configured).
         """
+        disk_bytes_held = int(self._disk.volume()) if self._disk is not None else 0
         with self._lock:
             total = self._hits + self._disk_hits + self._misses
             hit_rate = (self._hits + self._disk_hits) / total if total else 0.0
             bytes_held = sum(_sizeof(v) for v in self._store.values())
-            disk_bytes_held = int(self._disk.volume()) if self._disk is not None else 0
             return {
                 "size": len(self._store),
                 "hits": self._hits,

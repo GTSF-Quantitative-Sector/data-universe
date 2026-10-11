@@ -49,10 +49,28 @@ a real API key.
 
 When `cache_disk_dir` points at a shared disk (multiple colocated processes/applications
 reading the same path), that directory grows unbounded up to `cache_disk_size_limit`
-(default: `diskcache`'s own 1GB limit, which evicts least-recently-used entries once hit).
-There is no automatic cleanup beyond that limit and no process separating one project's
-entries from another's within the same directory -- give each project its own
-`cache_disk_dir` if that isolation matters.
+(default: `diskcache`'s own 1GB limit, which evicts least-recently-**stored** entries once
+hit -- not least-recently-used; a hot entry that's read often but never rewritten can still
+get evicted ahead of a colder but more recently-stored one). There is no automatic cleanup
+beyond that limit and no process separating one project's entries from another's within the
+same directory -- give each project its own `cache_disk_dir` if that isolation matters.
+
+The directory must be owned and writable only by trusted accounts/processes: `diskcache`
+unpickles whatever is stored there, so a writable shared directory is effectively
+code-execution trust in every colocated process that reads it, and cached files are created
+with default permissions (readable by any local user on that machine). Don't point
+`cache_disk_dir` at a world-writable or multi-tenant-shared location.
+
+Calling `Cache.clear()` when a disk tier is configured empties that directory for every
+process sharing it, not just the caller.
+
+Disk-persisted entries have no TTL and are never automatically invalidated (see
+`data_universe/cache.py`'s module docstring "Known limitations"). After a deploy that
+changes any cached data source's output format, `clear()` the cache or point
+`cache_disk_dir` at a fresh directory -- otherwise old-shaped entries on disk will keep
+being served as valid hits. The same risk applies to any cached range that includes "today":
+an in-progress session cached mid-day can be served back as a stale partial day after the
+session closes.
 
 ## 7. Index membership tables
 

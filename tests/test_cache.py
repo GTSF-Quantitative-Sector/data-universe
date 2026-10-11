@@ -1,5 +1,6 @@
 import datetime as dt
 
+import diskcache
 import pandas as pd
 import pytest
 
@@ -470,6 +471,15 @@ def test_stats_disk_bytes_held_is_zero_when_disk_tier_off():
     assert cache.stats()["disk_bytes_held"] == 0
 
 
+def test_empty_string_disk_dir_does_not_crash_and_behaves_as_no_disk_tier():
+    # An empty string disk_dir (e.g. from an empty config.example.yaml value) must
+    # be treated the same as disk_dir=None, not passed through to diskcache.Cache,
+    # which would raise FileNotFoundError on the first @cached call.
+    cache = Cache(capacity=10, disk_dir="")
+    assert cache._disk is None
+    assert cache.get_or_load("ns", ("a",), lambda: "value") == "value"
+
+
 def test_disk_size_limit_is_passed_through_to_diskcache(tmp_path):
     cache = Cache(capacity=10, disk_dir=str(tmp_path), disk_size_limit=123_456)
     assert cache._disk.size_limit == 123_456
@@ -488,3 +498,32 @@ def test_get_cache_singleton_enables_disk_tier_from_config(tmp_path, monkeypatch
 def test_get_cache_singleton_has_no_disk_tier_by_default():
     cache = get_cache()
     assert cache._disk is None
+
+
+def test_get_cache_singleton_has_no_disk_tier_after_env_var_is_stripped(tmp_path, monkeypatch):
+    # Regression test for the autouse `tests/conftest.py` fixture: setting then
+    # stripping DATA_UNIVERSE_CACHE_DISK_DIR must leave get_cache() purely
+    # in-memory, the same as a clean test environment with the var never set --
+    # this is what protects a real shared disk cache from mock test data.
+    monkeypatch.setenv("DATA_UNIVERSE_CACHE_DISK_DIR", str(tmp_path))
+    config.reset()
+    monkeypatch.delenv("DATA_UNIVERSE_CACHE_DISK_DIR", raising=False)
+    config.reset()
+    reset_cache()
+    cache = get_cache()
+    assert cache._disk is None
+
+
+def test_disk_write_failure_does_not_lose_a_successful_load(tmp_path, monkeypatch):
+    # A failed disk write (unpicklable value, diskcache.Timeout, etc.) must not
+    # propagate -- the caller already got a successful load and should still get
+    # the value, just without a disk copy of it (best-effort disk tier).
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+
+    def failing_set(*args, **kwargs):
+        raise diskcache.Timeout("simulated disk write failure")
+
+    monkeypatch.setattr(cache._disk, "set", failing_set)
+    result = cache.get_or_load("ns", ("a",), lambda: "value")
+    assert result == "value"
+    assert cache.stats()["misses"] == 1
