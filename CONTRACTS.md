@@ -106,6 +106,8 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `FRED_API_KEY` | `fred_key` |
 | `DATA_UNIVERSE_DATA_DIR` | `data_dir` |
 | `DATA_UNIVERSE_CACHE_SIZE` | `cache_size` |
+| `DATA_UNIVERSE_CACHE_DISK_DIR` | `cache_disk_dir` |
+| `DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT` | `cache_disk_size_limit` |
 
 The Polygon API key is held only in memory and sent as an `Authorization: Bearer` header —
 never interpolated into a URL, never logged.

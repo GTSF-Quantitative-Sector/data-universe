@@ -45,7 +45,16 @@ floor pinned only locally doesn't help the next person who installs fresh.
 module is added, keep it testable against a fake/mock the same way; don't make CI depend on
 a real API key.
 
-## 6. Index membership tables
+## 6. Disk-backed cache directory
+
+When `cache_disk_dir` points at a shared disk (multiple colocated processes/applications
+reading the same path), that directory grows unbounded up to `cache_disk_size_limit`
+(default: `diskcache`'s own 1GB limit, which evicts least-recently-used entries once hit).
+There is no automatic cleanup beyond that limit and no process separating one project's
+entries from another's within the same directory -- give each project its own
+`cache_disk_dir` if that isolation matters.
+
+## 7. Index membership tables
 
 `sources/index_universe.py` scrapes current S&P 500, Dow and Nasdaq-100 membership from
 Wikipedia. If a run raises `UniverseParseError`, open the page named in the message and

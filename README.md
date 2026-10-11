@@ -52,8 +52,10 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
 - **`config.py`** — global configuration: `set_polygon_key`, `set_project`, `set_data_dir`,
   `set_cache_size`, `load_yaml`, and their `get_*` counterparts. Env var > YAML file >
   hardcoded default precedence (see "Configuration" below).
-- **`cache.py`** — a shared in-memory LRU `Cache` with per-access logging. `get_cache()`
-  returns the process-wide singleton; the `@cached("namespace")` decorator wraps `DataSource`
+- **`cache.py`** — a shared, two-tier (in-memory, optionally disk-backed) LRU `Cache` with
+  per-access logging. `get_cache()` returns the process-wide singleton, whose disk tier
+  turns on when `cache_disk_dir` is configured, so colocated processes share persisted
+  entries across restarts; the `@cached("namespace")` decorator wraps `DataSource`
   methods; `simulate(log, sizes)` replays a logged access sequence against candidate cache
   sizes to report hit rate.
 - **`calendar.py`** — trading-session helpers (`sessions`, `next_session`, `previous_session`,
@@ -145,6 +147,8 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `FRED_API_KEY` | FRED API key, used by `sources.fred.FredSource` |
 | `DATA_UNIVERSE_DATA_DIR` | Root directory for raw/interim/processed data and cache logs |
 | `DATA_UNIVERSE_CACHE_SIZE` | Default `Cache` capacity (entry count) |
+| `DATA_UNIVERSE_CACHE_DISK_DIR` | Directory for the disk-backed cache tier. Unset keeps the cache in-memory only (default) |
+| `DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT` | Byte size limit for the disk tier. Unset uses `diskcache`'s own default |
 
 Copy `config/config.example.yaml` to `config/config.yaml` (gitignored) and fill in real
 values, or call `q.config.load_yaml("config/config.yaml")` explicitly. An environment
