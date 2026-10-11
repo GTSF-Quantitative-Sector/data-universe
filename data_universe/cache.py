@@ -1,19 +1,23 @@
-"""A simple, shared in-memory LRU cache with per-access logging.
+"""A shared, two-tier LRU cache (in-memory, optionally disk-backed) with per-access logging.
 
-This is deliberately simple: one `OrderedDict` + one `threading.Lock` per
-`Cache` instance, one shared capacity across every data call that uses it.
-The goal of this version is to work correctly and measure real traffic --
-later caching rules (chunking overlapping date ranges, byte limits, TTLs,
-disk backing) come from replaying the access log this module writes, not
-from guessing now. See `data_universe.config` for the default capacity,
-project tag, and data directory this module reads.
+The in-memory tier is one `OrderedDict` + one `threading.Lock` per `Cache` instance, one
+shared capacity across every data call that uses it -- deliberately simple, and still the
+only tier by default (`disk_dir=None`). Passing `disk_dir` adds a `diskcache`-backed second
+tier: a miss in memory checks disk before calling `loader()`, so values survive a process
+restart and can be shared between multiple processes reading from the same directory
+(e.g. several applications colocated on one disk, all hitting the same Polygon/Massive/FRED
+data). A value found on disk is promoted into the in-memory tier; a value loaded fresh is
+written to both. See `data_universe.config` for the default capacity, project tag, data
+directory, and disk-cache directory/size-limit this module reads.
 
 Known limitations (by design, not bugs):
 - Overlapping date-range requests are separate cache keys; nothing here
   chunks or merges them.
 - Two concurrent misses on the same key can both call `loader()` -- the
   lock only ever guards `OrderedDict` mutation, never the load itself, so
-  one slow call can't block lookups for other keys.
+  one slow call can't block lookups for other keys. The disk tier does not
+  change this: two processes racing on the same miss can both load and both
+  write to disk, with the second write winning.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Hashable, Optional
 
+import diskcache
 import pandas as pd
 
 from data_universe import config
@@ -36,6 +41,7 @@ _ACCESS_LOG_COLUMNS = [
     "namespace",
     "key_repr",
     "hit",
+    "source",
     "bytes",
     "load_seconds",
     "project",
@@ -129,25 +135,45 @@ def _copy_value(value: Any) -> Any:
 
 
 class Cache:
-    """A shared, thread-safe, in-memory LRU cache with an access log.
+    """A shared, thread-safe, two-tier (memory + optional disk) LRU cache with an access log.
 
     Args:
-        capacity: Maximum number of entries. Defaults to
+        capacity: Maximum number of in-memory entries. Defaults to
             `data_universe.config.get_cache_size()` when None.
+        disk_dir: Directory for the disk-backed second tier. None (default) keeps the
+            cache purely in-memory, matching this class's original behavior exactly.
+        disk_size_limit: Byte size limit for the disk tier. None uses diskcache's own
+            default. Ignored when `disk_dir` is None.
     """
 
-    def __init__(self, capacity: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        capacity: Optional[int] = None,
+        disk_dir: Optional[str] = None,
+        disk_size_limit: Optional[int] = None,
+    ) -> None:
         self._capacity = capacity if capacity is not None else config.get_cache_size()
         self._lock = threading.Lock()
         self._store: "OrderedDict[tuple, Any]" = OrderedDict()
         self._hits = 0
+        self._disk_hits = 0
         self._misses = 0
         self._evictions = 0
         self._log: list = []
+        self._disk: Optional[diskcache.Cache] = None
+        if disk_dir is not None:
+            kwargs = {}
+            if disk_size_limit is not None:
+                kwargs["size_limit"] = disk_size_limit
+            self._disk = diskcache.Cache(disk_dir, **kwargs)
 
     def get_or_load(self, namespace: str, key: Hashable, loader: Callable[[], Any]) -> Any:
         """Return the cached value for `(namespace, key)`, loading it via `loader()`
-        on a miss. The actual load happens outside the lock.
+        on a miss in both tiers. The actual load happens outside the lock.
+
+        Checks the in-memory tier first, then the disk tier (if configured) before
+        calling `loader()`. A disk hit is promoted into the in-memory tier. A fresh load
+        is written to both tiers.
 
         Args:
             namespace: Cache namespace (see `cached()` for how source methods
@@ -163,35 +189,48 @@ class Cache:
             if full_key in self._store:
                 self._store.move_to_end(full_key)
                 value = self._store[full_key]
-                hit = True
+                source = "memory"
             else:
                 value = None
-                hit = False
+                source = None
 
-        if hit:
+        if source == "memory":
             result = value
             load_seconds = 0.0
         else:
-            start = time.perf_counter()
-            result = loader()
-            load_seconds = time.perf_counter() - start
+            disk_result = self._disk_get(full_key)
+            if disk_result is not None:
+                result = disk_result[0]
+                load_seconds = 0.0
+                source = "disk"
+            else:
+                start = time.perf_counter()
+                result = loader()
+                load_seconds = time.perf_counter() - start
+                source = "load"
 
         with self._lock:
-            if not hit:
+            if source == "memory":
+                self._hits += 1
+            else:
                 self._store[full_key] = result
                 self._store.move_to_end(full_key)
                 while len(self._store) > self._capacity:
                     self._store.popitem(last=False)
                     self._evictions += 1
-                self._misses += 1
-            else:
-                self._hits += 1
+                if source == "disk":
+                    self._disk_hits += 1
+                else:
+                    self._misses += 1
+                    if self._disk is not None:
+                        self._disk.set(full_key, result)
             self._log.append(
                 {
                     "timestamp": pd.Timestamp.now(tz="UTC"),
                     "namespace": namespace,
                     "key_repr": repr(key),
-                    "hit": hit,
+                    "hit": source in ("memory", "disk"),
+                    "source": source,
                     "bytes": _sizeof(result),
                     "load_seconds": load_seconds,
                     "project": config.get_project(),
@@ -199,32 +238,51 @@ class Cache:
             )
         return _copy_value(result)
 
+    def _disk_get(self, full_key: tuple) -> Optional[tuple]:
+        """Return `(value,)` from the disk tier, or None on a miss or no disk tier."""
+        if self._disk is None:
+            return None
+        sentinel = object()
+        value = self._disk.get(full_key, default=sentinel)
+        if value is sentinel:
+            return None
+        return (value,)
+
     def clear(self) -> None:
-        """Drop every entry and reset all counters and the access log."""
+        """Drop every entry (memory and disk) and reset all counters and the access log."""
         with self._lock:
             self._store.clear()
             self._hits = 0
+            self._disk_hits = 0
             self._misses = 0
             self._evictions = 0
             self._log.clear()
+            if self._disk is not None:
+                self._disk.clear()
 
     def stats(self) -> dict:
-        """Return `{size, hits, misses, evictions, hit_rate, bytes_held}`.
+        """Return `{size, hits, disk_hits, misses, evictions, hit_rate, bytes_held,
+        disk_bytes_held}`.
 
-        `hit_rate` is `hits / (hits + misses)`, 0.0 if there have been no accesses.
-        `bytes_held` is the summed best-effort byte size of every currently cached value.
+        `hit_rate` is `(hits + disk_hits) / (hits + disk_hits + misses)`, 0.0 if there
+        have been no accesses. `bytes_held` is the summed best-effort byte size of every
+        currently in-memory value; `disk_bytes_held` is the disk tier's reported size (0
+        when no disk tier is configured).
         """
         with self._lock:
-            total = self._hits + self._misses
-            hit_rate = self._hits / total if total else 0.0
+            total = self._hits + self._disk_hits + self._misses
+            hit_rate = (self._hits + self._disk_hits) / total if total else 0.0
             bytes_held = sum(_sizeof(v) for v in self._store.values())
+            disk_bytes_held = int(self._disk.volume()) if self._disk is not None else 0
             return {
                 "size": len(self._store),
                 "hits": self._hits,
+                "disk_hits": self._disk_hits,
                 "misses": self._misses,
                 "evictions": self._evictions,
                 "hit_rate": hit_rate,
                 "bytes_held": bytes_held,
+                "disk_bytes_held": disk_bytes_held,
             }
 
     def access_log(self) -> pd.DataFrame:
@@ -260,11 +318,20 @@ _default_cache_lock = threading.Lock()
 
 
 def get_cache() -> Cache:
-    """Return the process-wide default `Cache`, creating it on first use."""
+    """Return the process-wide default `Cache`, creating it on first use.
+
+    The disk tier turns on automatically when `config.get_cache_disk_dir()` is set
+    (env var `DATA_UNIVERSE_CACHE_DISK_DIR` or `config/config.yaml`'s `cache_disk_dir`),
+    so every process in the same deployment that reads that config shares persisted
+    entries from the same directory.
+    """
     global _default_cache
     with _default_cache_lock:
         if _default_cache is None:
-            _default_cache = Cache()
+            _default_cache = Cache(
+                disk_dir=config.get_cache_disk_dir(),
+                disk_size_limit=config.get_cache_disk_size_limit(),
+            )
         return _default_cache
 
 

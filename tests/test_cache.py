@@ -103,6 +103,7 @@ def test_access_log_has_expected_columns_and_order():
         "namespace",
         "key_repr",
         "hit",
+        "source",
         "bytes",
         "load_seconds",
         "project",
@@ -145,10 +146,12 @@ def test_clear_resets_stats_and_store():
     assert stats == {
         "size": 0,
         "hits": 0,
+        "disk_hits": 0,
         "misses": 0,
         "evictions": 0,
         "hit_rate": 0.0,
         "bytes_held": 0,
+        "disk_bytes_held": 0,
     }
 
 
@@ -347,3 +350,141 @@ def test_simulate_on_empty_log_returns_zero_rates():
     result = simulate(empty_log, [1, 10]).set_index("size")
     assert (result["hit_rate"] == 0.0).all()
     assert (result["load_seconds_saved"] == 0.0).all()
+
+
+def test_disk_dir_none_behaves_exactly_as_before(tmp_path):
+    # No disk tier configured -- nothing written to disk at all.
+    cache = Cache(capacity=10, disk_dir=None)
+    cache.get_or_load("ns", ("k",), lambda: "value")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_disk_hit_avoids_calling_loader_again(tmp_path):
+    calls = []
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: calls.append(1) or "value")
+    assert len(calls) == 1
+
+    # Fresh Cache, same disk_dir, simulating a process restart.
+    cache2 = Cache(capacity=10, disk_dir=str(tmp_path))
+    result = cache2.get_or_load("ns", ("k",), lambda: calls.append(1) or "value")
+    assert result == "value"
+    assert len(calls) == 1  # loader not called again -- served from disk
+
+
+def test_disk_hit_is_promoted_into_memory_tier(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "value")
+
+    cache2 = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache2.get_or_load("ns", ("k",), lambda: "value")
+    assert cache2.stats()["size"] == 1  # now also in cache2's in-memory tier
+
+
+def test_disk_hit_counts_separately_from_memory_hit(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "value")  # miss, written to disk + memory
+
+    cache2 = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache2.get_or_load("ns", ("k",), lambda: "value")  # disk hit
+    stats = cache2.stats()
+    assert stats["disk_hits"] == 1
+    assert stats["hits"] == 0
+    assert stats["misses"] == 0
+
+
+def test_access_log_source_column_distinguishes_memory_disk_and_load(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "value")  # load
+    cache.get_or_load("ns", ("k",), lambda: "value")  # memory hit
+    log = cache.access_log()
+    assert list(log["source"]) == ["load", "memory"]
+
+
+def test_disk_hit_access_log_source_is_disk(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "value")
+
+    cache2 = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache2.get_or_load("ns", ("k",), lambda: "value")
+    log = cache2.access_log()
+    assert list(log["source"]) == ["disk"]
+
+
+def test_disk_tier_survives_separate_cache_instances_sharing_a_directory(tmp_path):
+    # Two "processes" (two Cache instances) pointed at the same directory.
+    writer = Cache(capacity=10, disk_dir=str(tmp_path))
+    writer.get_or_load("ns", ("shared-key",), lambda: "written-by-writer")
+
+    reader = Cache(capacity=10, disk_dir=str(tmp_path))
+    calls = []
+    result = reader.get_or_load(
+        "ns", ("shared-key",), lambda: calls.append(1) or "should-not-load"
+    )
+    assert result == "written-by-writer"
+    assert calls == []
+
+
+def test_dataframe_disk_round_trip_preserves_values(tmp_path):
+    df = pd.DataFrame({"x": [1, 2, 3]})
+    writer = Cache(capacity=10, disk_dir=str(tmp_path))
+    writer.get_or_load("ns", ("k",), lambda: df)
+
+    reader = Cache(capacity=10, disk_dir=str(tmp_path))
+    result = reader.get_or_load("ns", ("k",), lambda: pd.DataFrame())
+    pd.testing.assert_frame_equal(result, df)
+
+
+def test_disk_hit_result_is_an_independent_copy(tmp_path):
+    writer = Cache(capacity=10, disk_dir=str(tmp_path))
+    df = pd.DataFrame({"x": [1, 2, 3]})
+    writer.get_or_load("ns", ("k",), lambda: df)
+
+    reader = Cache(capacity=10, disk_dir=str(tmp_path))
+    result = reader.get_or_load("ns", ("k",), lambda: df)
+    result.iloc[0, 0] = 999
+    fresh = reader.get_or_load("ns", ("k",), lambda: df)
+    assert fresh.iloc[0, 0] != 999
+
+
+def test_clear_also_clears_disk_tier(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "value")
+    cache.clear()
+
+    reader = Cache(capacity=10, disk_dir=str(tmp_path))
+    calls = []
+    reader.get_or_load("ns", ("k",), lambda: calls.append(1) or "reloaded")
+    assert calls == [1]  # disk entry gone too, had to reload
+
+
+def test_stats_disk_bytes_held_reflects_disk_tier_when_configured(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+    cache.get_or_load("ns", ("k",), lambda: "x" * 10_000)
+    assert cache.stats()["disk_bytes_held"] > 9_000
+
+
+def test_stats_disk_bytes_held_is_zero_when_disk_tier_off():
+    cache = Cache(capacity=10, disk_dir=None)
+    cache.get_or_load("ns", ("k",), lambda: "x" * 10_000)
+    assert cache.stats()["disk_bytes_held"] == 0
+
+
+def test_disk_size_limit_is_passed_through_to_diskcache(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path), disk_size_limit=123_456)
+    assert cache._disk.size_limit == 123_456
+
+
+def test_get_cache_singleton_enables_disk_tier_from_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_UNIVERSE_CACHE_DISK_DIR", str(tmp_path))
+    config.reset()
+    reset_cache()
+    cache = get_cache()
+    assert cache._disk is not None
+    config.reset()
+    reset_cache()
+
+
+def test_get_cache_singleton_has_no_disk_tier_by_default():
+    cache = get_cache()
+    assert cache._disk is None
