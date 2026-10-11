@@ -14,3 +14,8 @@ massive_base_url: "https://api.massive.com"
 fred_api_key: ""
 data_dir: "data"
 cache_size: 256
+# Disk-backed cache tier: set cache_disk_dir to persist cached values across process
+# restarts and share them between colocated processes reading the same disk. Leave empty
+# to keep the cache in-memory only (default).
+cache_disk_dir: ""
+cache_disk_size_limit_bytes: ""

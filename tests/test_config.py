@@ -98,3 +98,35 @@ def test_load_yaml_sets_massive_values(tmp_path, monkeypatch):
     config.load_yaml(str(yaml_path))
     assert config.get_massive_key() == "from-yaml"
     assert config.get_massive_base_url() == "https://yaml.test"
+
+
+def test_cache_disk_dir_defaults_to_none():
+    assert config.get_cache_disk_dir() is None
+
+
+def test_cache_disk_dir_set_and_get():
+    config.set_cache_disk_dir("/tmp/some-cache-dir")
+    assert config.get_cache_disk_dir() == "/tmp/some-cache-dir"
+
+
+def test_cache_disk_dir_env_var_wins_over_set(monkeypatch):
+    monkeypatch.setenv("DATA_UNIVERSE_CACHE_DISK_DIR", "/env/dir")
+    config.reset()
+    assert config.get_cache_disk_dir() == "/env/dir"
+
+
+def test_cache_disk_size_limit_defaults_to_none():
+    assert config.get_cache_disk_size_limit() is None
+
+
+def test_cache_disk_size_limit_set_and_get():
+    config.set_cache_disk_size_limit(1_000_000)
+    assert config.get_cache_disk_size_limit() == 1_000_000
+
+
+def test_load_yaml_reads_cache_disk_dir(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("cache_disk_dir: /yaml/dir\ncache_disk_size_limit_bytes: 500\n")
+    config.load_yaml(str(p))
+    assert config.get_cache_disk_dir() == "/yaml/dir"
+    assert config.get_cache_disk_size_limit() == 500

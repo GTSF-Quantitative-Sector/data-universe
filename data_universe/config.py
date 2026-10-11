@@ -28,6 +28,8 @@ _ENV_VARS = {
     "fred_key": "FRED_API_KEY",
     "data_dir": "DATA_UNIVERSE_DATA_DIR",
     "cache_size": "DATA_UNIVERSE_CACHE_SIZE",
+    "cache_disk_dir": "DATA_UNIVERSE_CACHE_DISK_DIR",
+    "cache_disk_size_limit": "DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT",
 }
 
 # Maps a config/config.yaml top-level key to the internal state key it feeds.
@@ -42,6 +44,8 @@ _YAML_KEYS = {
     "fred_api_key": "fred_key",
     "data_dir": "data_dir",
     "cache_size": "cache_size",
+    "cache_disk_dir": "cache_disk_dir",
+    "cache_disk_size_limit_bytes": "cache_disk_size_limit",
 }
 
 _state: dict = {}
@@ -55,7 +59,7 @@ def _default(state_key: str, default):
     value = os.environ.get(env_var)
     if value is None:
         return default
-    if state_key == "cache_size":
+    if state_key in ("cache_size", "cache_disk_size_limit"):
         return int(value)
     return value
 
@@ -76,6 +80,8 @@ def reset() -> None:
     _state["fred_key"] = _default("fred_key", None)
     _state["data_dir"] = _default("data_dir", _DEFAULT_DATA_DIR)
     _state["cache_size"] = _default("cache_size", _DEFAULT_CACHE_SIZE)
+    _state["cache_disk_dir"] = _default("cache_disk_dir", None)
+    _state["cache_disk_size_limit"] = _default("cache_disk_size_limit", None)
     _state["project"] = None
 
 
@@ -215,6 +221,26 @@ def get_cache_size() -> int:
     return _state["cache_size"]
 
 
+def set_cache_disk_dir(path: Optional[str]) -> None:
+    """Set the directory for the disk-backed cache tier. None disables it (default)."""
+    _state["cache_disk_dir"] = path
+
+
+def get_cache_disk_dir() -> Optional[str]:
+    """Return the configured disk-cache directory, or None if the disk tier is off."""
+    return _state["cache_disk_dir"]
+
+
+def set_cache_disk_size_limit(n: Optional[int]) -> None:
+    """Set the disk-cache byte size limit. None uses diskcache's own default (1GB)."""
+    _state["cache_disk_size_limit"] = n
+
+
+def get_cache_disk_size_limit() -> Optional[int]:
+    """Return the configured disk-cache byte size limit, or None for diskcache's default."""
+    return _state["cache_disk_size_limit"]
+
+
 def load_yaml(path: str = "config/config.yaml") -> None:
     """Load settings from a YAML file. Environment variables still take precedence:
     a key present in both the YAML file and the environment keeps its environment value.
@@ -237,7 +263,9 @@ def load_yaml(path: str = "config/config.yaml") -> None:
         if env_var and os.environ.get(env_var) is not None:
             continue  # environment variable wins
         value = data[yaml_key]
-        _state[state_key] = int(value) if state_key == "cache_size" else value
+        if state_key in ("cache_size", "cache_disk_size_limit"):
+            value = int(value)
+        _state[state_key] = value
 
 
 reset()
