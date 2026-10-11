@@ -23,6 +23,7 @@ setup(
         "scipy",
         "pyyaml",
         "lxml",
+        "diskcache",
     ],
     extras_require={
         "sec": [
