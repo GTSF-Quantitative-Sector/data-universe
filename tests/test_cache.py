@@ -514,6 +514,37 @@ def test_get_cache_singleton_has_no_disk_tier_after_env_var_is_stripped(tmp_path
     assert cache._disk is None
 
 
+def test_clear_during_in_flight_load_is_not_resurrected_in_memory(tmp_path):
+    # Regression test: a clear() that completes while loader() is still running for
+    # a concurrent miss on the same key must not let that load's result get written
+    # back into the memory tier afterward.
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+
+    def loader():
+        cache.clear()
+        return "stale_value"
+
+    result = cache.get_or_load("ns", ("k",), loader)
+    assert result == "stale_value"  # caller still gets their value
+    assert cache._store == {}  # but it's not resurrected into memory
+
+
+def test_clear_during_in_flight_load_is_not_resurrected_on_disk(tmp_path):
+    cache = Cache(capacity=10, disk_dir=str(tmp_path))
+
+    def loader():
+        cache.clear()
+        return "stale_value"
+
+    cache.get_or_load("ns", ("k",), loader)
+
+    reader = Cache(capacity=10, disk_dir=str(tmp_path))
+    calls = []
+    result = reader.get_or_load("ns", ("k",), lambda: calls.append(1) or "fresh")
+    assert calls == [1]  # had to reload, stale_value was not left on disk
+    assert result == "fresh"
+
+
 def test_disk_write_failure_does_not_lose_a_successful_load(tmp_path, monkeypatch):
     # A failed disk write (unpicklable value, diskcache.Timeout, etc.) must not
     # propagate -- the caller already got a successful load and should still get

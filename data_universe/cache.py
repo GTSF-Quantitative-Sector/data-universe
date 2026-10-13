@@ -18,6 +18,13 @@ Known limitations (by design, not bugs):
   one slow call can't block lookups for other keys. The disk tier does not
   change this: two processes racing on the same miss can both load and both
   write to disk, with the second write winning.
+- A generation counter, bumped on every `clear()`, stops a load that was in
+  flight *before* a `clear()` from writing its (now stale) result back into
+  either tier afterward -- the write is dropped and the caller still gets
+  their value, just uncached. This narrows the window for a `clear()` racing
+  a near-simultaneous `loader()` call on the same key to the same class of
+  race already accepted above (two concurrent writers, second write wins);
+  it does not add new locking around the load or the disk write itself.
 - No staleness/TTL story: unlike the in-memory-only cache this replaces, a
   disk-persisted entry survives a process restart and is never automatically
   invalidated. Two cases to watch for: a deploy that changes a source's
@@ -175,6 +182,7 @@ class Cache:
         self._misses = 0
         self._evictions = 0
         self._log: list = []
+        self._generation = 0
         self._disk: Optional[diskcache.Cache] = None
         if disk_dir is not None and disk_dir.strip() != "":
             kwargs = {}
@@ -201,6 +209,7 @@ class Cache:
         """
         full_key = (namespace, key)
         with self._lock:
+            generation_at_start = self._generation
             if full_key in self._store:
                 self._store.move_to_end(full_key)
                 value = self._store[full_key]
@@ -225,14 +234,20 @@ class Cache:
                 source = "load"
 
         with self._lock:
+            # A `clear()` that completed while this lookup was outside the lock (loading
+            # from the source, or reading the disk tier) bumps `_generation`. Writing
+            # `result` back after that would resurrect an entry `clear()` just removed,
+            # in both tiers -- so a generation mismatch skips the store write entirely.
+            stale = self._generation != generation_at_start
             if source == "memory":
                 self._hits += 1
             else:
-                self._store[full_key] = result
-                self._store.move_to_end(full_key)
-                while len(self._store) > self._capacity:
-                    self._store.popitem(last=False)
-                    self._evictions += 1
+                if not stale:
+                    self._store[full_key] = result
+                    self._store.move_to_end(full_key)
+                    while len(self._store) > self._capacity:
+                        self._store.popitem(last=False)
+                        self._evictions += 1
                 if source == "disk":
                     self._disk_hits += 1
                 else:
@@ -253,12 +268,18 @@ class Cache:
         # Disk I/O happens outside the lock -- diskcache's own `Cache` is already
         # thread/process-safe, and a slow write here must not stall other threads'
         # memory-only lookups. A failed write is treated as best-effort: the caller
-        # still gets the value they loaded, just without a disk copy of it.
-        if source == "load" and self._disk is not None:
-            try:
-                self._disk.set(full_key, result)
-            except Exception:
-                pass
+        # still gets the value they loaded, just without a disk copy of it. Re-check
+        # `stale` right before writing: it narrows (but, same as the module's other
+        # documented concurrent-write races, can't fully close) the window where a
+        # `clear()` lands between the lock block above and this write.
+        if source == "load" and self._disk is not None and not stale:
+            with self._lock:
+                stale = self._generation != generation_at_start
+            if not stale:
+                try:
+                    self._disk.set(full_key, result)
+                except Exception:
+                    pass
         return _copy_value(result)
 
     def _disk_get(self, full_key: tuple) -> Optional[tuple]:
@@ -284,6 +305,7 @@ class Cache:
             self._misses = 0
             self._evictions = 0
             self._log.clear()
+            self._generation += 1
         if self._disk is not None:
             self._disk.clear()
 
