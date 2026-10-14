@@ -3,6 +3,7 @@ import pytest
 
 from data_universe import config
 from data_universe.membership import store
+from data_universe.membership.errors import MembershipError
 from data_universe.membership.schema import TICKER_INTERVALS_COLUMNS
 
 
@@ -25,6 +26,9 @@ def test_tables_dir_honors_config_override(tmp_path):
 
 def test_load_ticker_intervals_returns_empty_frame_with_right_columns_when_file_missing(tmp_path):
     config.set_membership_tables_dir(str(tmp_path))
+    # The index_id's tables_dir itself must exist -- a known index with just
+    # this one file missing is a legitimate state (e.g. freshly initialized).
+    (tmp_path / "sp500").mkdir(parents=True)
     frame = store.load_ticker_intervals("sp500")
     assert list(frame.columns) == TICKER_INTERVALS_COLUMNS
     assert len(frame) == 0
@@ -64,4 +68,32 @@ def test_manifest_round_trip(tmp_path):
 
 def test_load_manifest_returns_empty_dict_when_missing(tmp_path):
     config.set_membership_tables_dir(str(tmp_path))
+    # The index_id's tables_dir itself must exist -- a known index before its
+    # manifest.json has been written is a legitimate state.
+    (tmp_path / "sp500").mkdir(parents=True)
     assert store.load_manifest("sp500") == {}
+
+
+def test_load_function_raises_membership_error_when_tables_dir_missing(tmp_path):
+    config.set_membership_tables_dir(str(tmp_path))
+    # Nothing creates tmp_path/"dow" -- the whole directory for this
+    # index_id is missing, which should error loudly rather than look like
+    # a known-but-empty index.
+    with pytest.raises(MembershipError, match="dow"):
+        store.load_ticker_intervals("dow")
+
+
+def test_load_manifest_raises_membership_error_when_tables_dir_missing(tmp_path):
+    config.set_membership_tables_dir(str(tmp_path))
+    with pytest.raises(MembershipError, match="dow"):
+        store.load_manifest("dow")
+
+
+def test_load_function_still_returns_empty_frame_for_known_index_missing_one_file(tmp_path):
+    config.set_membership_tables_dir(str(tmp_path))
+    (tmp_path / "sp500").mkdir(parents=True)
+    # ticker_intervals.csv was never written for this known index, but the
+    # directory exists -- this must keep returning an empty frame, not raise.
+    frame = store.load_ticker_intervals("sp500")
+    assert list(frame.columns) == TICKER_INTERVALS_COLUMNS
+    assert len(frame) == 0

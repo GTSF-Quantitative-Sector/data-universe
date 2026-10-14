@@ -104,3 +104,44 @@ def test_membership_grid_strict_raises_when_stale(tmp_path):
     store.save_manifest("sp500", {"verified_through": "2000-01-01"})
     with pytest.raises(MembershipStaleError):
         membership_grid("sp500", pd.DatetimeIndex(["2020-01-01"]), strict=True)
+
+
+def test_membership_grid_is_correct_regardless_of_session_input_order(two_security_tables):
+    # AAA is a member from 2020-01-01 (inclusive) to 2020-01-10 (exclusive).
+    # Passed out of order, a naive searchsorted over an unsorted index would
+    # compute nonsense slice positions and silently return wrong values.
+    unsorted_sessions = pd.DatetimeIndex(["2020-01-10", "2020-01-05", "2020-01-09"])
+    grid = membership_grid("sp500", unsorted_sessions)
+    aaa = grid["AAA-20200101"]
+    assert list(aaa) == [False, True, True]
+    # Row order must match the caller's requested order, not sorted order.
+    assert list(grid.index) == list(unsorted_sessions)
+
+
+def test_membership_grid_handles_duplicate_sessions_in_requested_order(two_security_tables):
+    sessions = pd.DatetimeIndex(["2020-01-09", "2020-01-10", "2020-01-09"])
+    grid = membership_grid("sp500", sessions)
+    assert list(grid["AAA-20200101"]) == [True, False, True]
+    assert list(grid.index) == list(sessions)
+
+
+def test_mask_like_preserves_hourly_index_and_computes_correct_values(two_security_tables):
+    # AAA is a member through the close of 2020-01-09 and no longer a member
+    # from 2020-01-10 onward (end_date_excl). Hourly timestamps on those two
+    # days must each resolve against the right day, not get collapsed onto a
+    # single normalized midnight row.
+    hourly_index = pd.DatetimeIndex(["2020-01-09 10:00", "2020-01-09 15:30", "2020-01-10 11:00"])
+    features = pd.DataFrame({"AAA-20200101": [1.0, 2.0, 3.0]}, index=hourly_index)
+    mask = mask_like(features, "sp500")
+    assert list(mask.index) == list(hourly_index)
+    assert mask.index.equals(features.index)
+    assert list(mask["AAA-20200101"]) == [True, True, False]
+
+
+def test_mask_like_handles_tz_aware_index_without_raising(two_security_tables):
+    tz_index = pd.DatetimeIndex(["2020-01-09", "2020-01-10"], tz="America/New_York")
+    features = pd.DataFrame({"AAA-20200101": [1.0, 2.0]}, index=tz_index)
+    mask = mask_like(features, "sp500")
+    assert mask.index.equals(features.index)
+    assert str(mask.index.tz) == "America/New_York"
+    assert list(mask["AAA-20200101"]) == [True, False]

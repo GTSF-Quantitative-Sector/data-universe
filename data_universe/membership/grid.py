@@ -29,34 +29,57 @@ def membership_grid(index_id: str, sessions, strict: bool = False) -> pd.DataFra
             (default), emit `MembershipStaleWarning` and proceed anyway.
 
     Returns:
-        A bool DataFrame, index=`sessions` (name "date"), columns=sorted security_id.
+        A bool DataFrame, columns=sorted security_id. The row index is
+        `sessions` itself (normalized, name "date") -- same order, including
+        duplicates, as what the caller passed in. `sessions` need not be
+        sorted; it is sorted and deduped internally for the interval lookup
+        and the result is scattered back into the caller's requested order.
     """
     _check_staleness(index_id, strict)
     member_intervals = intervals_module.membership_intervals(index_id)
 
-    session_index = pd.DatetimeIndex(sessions).normalize()
+    requested_index = pd.DatetimeIndex(sessions).normalize()
+    unique_sorted = requested_index.unique().sort_values()
+    lookup_index = (
+        unique_sorted.tz_localize(None) if unique_sorted.tz is not None else unique_sorted
+    )
+
     columns = sorted(member_intervals["security_id"].unique())
     column_of = {security_id: position for position, security_id in enumerate(columns)}
-    values = np.zeros((len(session_index), len(columns)), dtype=bool)
+    values = np.zeros((len(unique_sorted), len(columns)), dtype=bool)
 
     for _, row in member_intervals.iterrows():
         start = pd.Timestamp(row["start_date"])
         end = row["end_date_excl"]
-        first = session_index.searchsorted(start, side="left")
+        first = lookup_index.searchsorted(start, side="left")
         last = (
-            len(session_index)
+            len(lookup_index)
             if pd.isna(end)
-            else session_index.searchsorted(pd.Timestamp(end), side="left")
+            else lookup_index.searchsorted(pd.Timestamp(end), side="left")
         )
         values[first:last, column_of[row["security_id"]]] = True
 
-    return pd.DataFrame(values, index=pd.DatetimeIndex(session_index, name="date"), columns=columns)
+    sorted_grid = pd.DataFrame(values, index=unique_sorted, columns=columns)
+    requested_lookup = (
+        requested_index.tz_localize(None) if requested_index.tz is not None else requested_index
+    )
+    positions = lookup_index.searchsorted(requested_lookup, side="left")
+    result = sorted_grid.iloc[positions]
+    result.index = pd.DatetimeIndex(requested_index, name="date")
+    return result
 
 
 def mask_like(features: pd.DataFrame, index_id: str) -> pd.DataFrame:
     """Boolean mask with the same index and columns as `features`. A column
-    `features` has that `index_id` never held as a member is all False."""
+    `features` has that `index_id` never held as a member is all False.
+
+    `membership_grid` is looked up with `features.index` normalized to
+    midnight for the membership comparison, but the mask handed back is
+    reindexed onto `features.index` itself (same values, order, name, and
+    tz) so it lines up row-for-row with `features` even when `features` is
+    sampled intraday (e.g. hourly bars)."""
     grid = membership_grid(index_id, features.index)
+    grid.index = features.index
     return grid.reindex(columns=features.columns, fill_value=False)
 
 

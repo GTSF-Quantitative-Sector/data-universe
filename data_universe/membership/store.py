@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from data_universe import config
+from data_universe.membership.errors import MembershipError
 from data_universe.membership.schema import (
     SECURITY_MAP_COLUMNS,
     SECURITY_MASTER_COLUMNS,
@@ -35,8 +36,20 @@ def tables_dir(index_id: str) -> Path:
     return root / index_id
 
 
+def _require_tables_dir(index_id: str) -> Path:
+    """`tables_dir(index_id)`, but raise `MembershipError` when the whole
+    directory is missing -- i.e. `index_id` is unknown (a typo or a not-yet-
+    built index), as opposed to a known index missing one specific file."""
+    directory = tables_dir(index_id)
+    if not directory.is_dir():
+        raise MembershipError(
+            f"Unknown index_id {index_id!r}: no tables directory found at {directory}"
+        )
+    return directory
+
+
 def _load_csv(index_id: str, filename: str, columns: list) -> pd.DataFrame:
-    path = tables_dir(index_id) / filename
+    path = _require_tables_dir(index_id) / filename
     if not path.exists():
         return pd.DataFrame(columns=columns)
     frame = pd.read_csv(path, dtype=str, keep_default_na=False, na_values=[""])
@@ -98,7 +111,7 @@ def save_tail_changes(index_id: str, frame: pd.DataFrame) -> None:
 
 
 def load_manifest(index_id: str) -> dict:
-    path = tables_dir(index_id) / "manifest.json"
+    path = _require_tables_dir(index_id) / "manifest.json"
     if not path.exists():
         return {}
     with open(path) as handle:
