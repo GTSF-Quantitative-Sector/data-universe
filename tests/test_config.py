@@ -162,3 +162,39 @@ def test_load_yaml_example_config_file_does_not_raise():
     config.load_yaml("config/config.example.yaml")
     assert config.get_cache_disk_dir() is None
     assert config.get_cache_disk_size_limit() is None
+
+
+def test_membership_max_staleness_days_defaults_to_45():
+    config.reset()
+    assert config.get_membership_max_staleness_days() == 45
+
+
+def test_membership_max_staleness_days_env_var_overrides_default(monkeypatch):
+    monkeypatch.setenv("DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS", "90")
+    config.reset()
+    assert config.get_membership_max_staleness_days() == 90
+
+
+def test_membership_tables_dir_defaults_to_none():
+    config.reset()
+    assert config.get_membership_tables_dir() is None
+
+
+def test_membership_tables_dir_env_var_overrides_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR", str(tmp_path))
+    config.reset()
+    assert config.get_membership_tables_dir() == str(tmp_path)
+
+
+def test_set_and_get_membership_max_staleness_days():
+    config.reset()
+    config.set_membership_max_staleness_days(10)
+    assert config.get_membership_max_staleness_days() == 10
+
+
+def test_load_yaml_empty_membership_tables_dir_resolves_to_none(tmp_path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("membership_tables_dir: ''\n")
+    config.reset()
+    config.load_yaml(str(yaml_path))
+    assert config.get_membership_tables_dir() is None

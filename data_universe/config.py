@@ -30,6 +30,8 @@ _ENV_VARS = {
     "cache_size": "DATA_UNIVERSE_CACHE_SIZE",
     "cache_disk_dir": "DATA_UNIVERSE_CACHE_DISK_DIR",
     "cache_disk_size_limit": "DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT",
+    "membership_max_staleness_days": "DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS",
+    "membership_tables_dir": "DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR",
 }
 
 # Maps a config/config.yaml top-level key to the internal state key it feeds.
@@ -46,6 +48,8 @@ _YAML_KEYS = {
     "cache_size": "cache_size",
     "cache_disk_dir": "cache_disk_dir",
     "cache_disk_size_limit_bytes": "cache_disk_size_limit",
+    "membership_max_staleness_days": "membership_max_staleness_days",
+    "membership_tables_dir": "membership_tables_dir",
 }
 
 _state: dict = {}
@@ -59,7 +63,7 @@ def _default(state_key: str, default):
     value = os.environ.get(env_var)
     if value is None:
         return default
-    if state_key in ("cache_size", "cache_disk_size_limit"):
+    if state_key in ("cache_size", "cache_disk_size_limit", "membership_max_staleness_days"):
         return int(value)
     return value
 
@@ -82,6 +86,8 @@ def reset() -> None:
     _state["cache_size"] = _default("cache_size", _DEFAULT_CACHE_SIZE)
     _state["cache_disk_dir"] = _default("cache_disk_dir", None)
     _state["cache_disk_size_limit"] = _default("cache_disk_size_limit", None)
+    _state["membership_max_staleness_days"] = _default("membership_max_staleness_days", 45)
+    _state["membership_tables_dir"] = _default("membership_tables_dir", None)
     _state["project"] = None
 
 
@@ -241,6 +247,27 @@ def get_cache_disk_size_limit() -> Optional[int]:
     return _state["cache_disk_size_limit"]
 
 
+def set_membership_max_staleness_days(n: int) -> None:
+    """Set the age (days past manifest.verified_through) past which
+    membership_grid(strict=True) raises MembershipStaleError, or
+    membership_grid(strict=False) (the default) warns instead. Default 45."""
+    _state["membership_max_staleness_days"] = n
+
+
+def get_membership_max_staleness_days() -> int:
+    return _state["membership_max_staleness_days"]
+
+
+def set_membership_tables_dir(path: Optional[str]) -> None:
+    """Override the directory data_universe.membership reads/writes tables
+    from. None (default) uses the packaged `membership/tables` directory."""
+    _state["membership_tables_dir"] = path
+
+
+def get_membership_tables_dir() -> Optional[str]:
+    return _state["membership_tables_dir"]
+
+
 def load_yaml(path: str = "config/config.yaml") -> None:
     """Load settings from a YAML file. Environment variables still take precedence:
     a key present in both the YAML file and the environment keeps its environment value.
@@ -263,13 +290,16 @@ def load_yaml(path: str = "config/config.yaml") -> None:
         if env_var and os.environ.get(env_var) is not None:
             continue  # environment variable wins
         value = data[yaml_key]
-        if state_key in ("cache_disk_dir", "cache_disk_size_limit"):
-            # These two keys document "leave empty to disable this feature" (see
+        if state_key in ("cache_disk_dir", "cache_disk_size_limit", "membership_tables_dir"):
+            # These keys document "leave empty to disable this feature" (see
             # config/config.example.yaml); an empty/whitespace-only string means None,
             # not a literal "" value, and must not reach int().
             if isinstance(value, str) and value.strip() == "":
                 value = None
-        if state_key in ("cache_size", "cache_disk_size_limit") and value is not None:
+        if (
+            state_key in ("cache_size", "cache_disk_size_limit", "membership_max_staleness_days")
+            and value is not None
+        ):
             value = int(value)
         _state[state_key] = value
 
