@@ -18,3 +18,17 @@ def test_feature_and_label_registries_are_exported():
 def test_precompute_and_load_feature_are_exported():
     assert callable(q.precompute)
     assert callable(q.load_feature)
+
+
+def test_membership_is_exported():
+    import data_universe as q
+
+    assert hasattr(q, "membership")
+    assert "membership" in q.__all__
+
+
+def test_membership_facade_exposes_expected_functions():
+    from data_universe import membership
+
+    for name in ("sp500_intervals", "membership_grid", "mask_like", "members_on", "status"):
+        assert hasattr(membership, name), f"membership.{name} missing"

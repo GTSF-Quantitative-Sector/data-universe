@@ -1,6 +1,6 @@
 from setuptools import setup
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 DESCRIPTION = "GTSF Quant Sector shared data and feature library."
 
 setup(
@@ -14,7 +14,15 @@ setup(
         "data_universe.features",
         "data_universe.labels",
         "data_universe.events",
+        "data_universe.membership",
     ],
+    package_data={
+        "data_universe.membership": [
+            "tables/sp500/*.csv",
+            "tables/sp500/*.json",
+            "tables/sp500/README.md",
+        ],
+    },
     install_requires=[
         "pandas",
         "numpy",
