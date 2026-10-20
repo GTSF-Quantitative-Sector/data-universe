@@ -177,6 +177,8 @@ The full suite runs against `sources/fakes.py`'s deterministic `FakeMarket`/
 
 ## See also
 
+- [`RESEARCH_CONTEXT.md`](RESEARCH_CONTEXT.md) — downstream research audit, Massive data
+  boundaries, implemented versus planned VRP features, and shared precompute priorities.
 - [`PLAN.md`](PLAN.md) — the original design spec this library implements.
 - [`CONTRACTS.md`](CONTRACTS.md) — frame/schema reference for downstream project teams.
 - [`MAINTENANCE.md`](MAINTENANCE.md) — recurring upkeep tasks, including the standing
