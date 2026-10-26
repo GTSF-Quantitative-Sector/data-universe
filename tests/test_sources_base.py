@@ -28,25 +28,55 @@ def test_filter_regular_hours_on_empty_frame_returns_empty():
     assert filtered.empty
 
 
-def test_filter_regular_hours_drops_bars_outside_930_to_1600():
+def test_filter_regular_hours_keeps_hourly_bars_overlapping_930_to_1600():
     index = pd.DatetimeIndex(
         [
+            "2023-01-03 08:00:00",
             "2023-01-03 09:00:00",
-            "2023-01-03 09:30:00",
-            "2023-01-03 12:00:00",
+            "2023-01-03 10:00:00",
+            "2023-01-03 15:00:00",
             "2023-01-03 16:00:00",
-            "2023-01-03 16:30:00",
+            "2023-01-03 17:00:00",
         ],
         tz="America/New_York",
         name="timestamp",
     )
     bars = pd.DataFrame(
-        {c: [1.0, 2.0, 3.0, 4.0, 5.0] for c in BAR_COLUMNS},
+        {c: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0] for c in BAR_COLUMNS},
         index=index,
     )
-    filtered = filter_regular_hours(bars)
-    assert len(filtered) == 3
+    filtered = filter_regular_hours(bars, bar_minutes=60)
+    # Start-stamped: the 09:00 bar covers 9:30-10:00, the 15:00 bar covers
+    # 15:00-16:00; 08:00 is fully pre-open and 16:00 fully after-hours.
     assert filtered.index.tolist() == index[1:4].tolist()
+
+
+def test_filter_regular_hours_with_one_minute_bars():
+    index = pd.DatetimeIndex(
+        [
+            "2023-01-03 09:29:00",
+            "2023-01-03 09:30:00",
+            "2023-01-03 15:59:00",
+            "2023-01-03 16:00:00",
+        ],
+        tz="America/New_York",
+        name="timestamp",
+    )
+    bars = pd.DataFrame({c: [1.0, 2.0, 3.0, 4.0] for c in BAR_COLUMNS}, index=index)
+    filtered = filter_regular_hours(bars, bar_minutes=1)
+    # Half-open window overlap: [09:29,09:30) misses, [09:30,09:31) and
+    # [15:59,16:00) intersect [09:30,16:00), [16:00,16:01) doesn't.
+    assert filtered.index.tolist() == index[1:3].tolist()
+
+
+def test_filter_regular_hours_converts_other_timezones_to_new_york():
+    # Summer: 13:00Z = 09:00 EDT (kept hourly bar), 20:00Z = 16:00 EDT (dropped).
+    index = pd.DatetimeIndex(
+        ["2023-07-05 13:00:00", "2023-07-05 20:00:00"], tz="UTC", name="timestamp"
+    )
+    bars = pd.DataFrame({c: [1.0, 2.0] for c in BAR_COLUMNS}, index=index)
+    filtered = filter_regular_hours(bars, bar_minutes=60)
+    assert filtered.index.tolist() == index[:1].tolist()
 
 
 def test_filter_regular_hours_returns_a_copy():

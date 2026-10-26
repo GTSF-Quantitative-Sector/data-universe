@@ -2,9 +2,13 @@
 
 Bar frames: tz-aware `DatetimeIndex` named "timestamp" in America/New_York,
 columns open/high/low/close/volume/vwap as float64. Daily bars are stamped
-at midnight of the session date; intraday bars are filtered to regular
-trading hours (9:30-16:00 ET) by default. Prices are split- and
-dividend-adjusted unless a function name says otherwise.
+at midnight of the session date. Intraday bars are stamped at the START of
+their window (the vendor convention), and are filtered to regular trading
+hours by window overlap -- a bar survives iff any part of its
+`[stamp, stamp + bar_minutes)` window intersects 09:30-16:00 ET. For hourly
+bars that keeps the 09:00-15:00 stamps; the 09:00 bar includes 9:00-9:30
+pre-market trades, which is accepted (see `filter_regular_hours`). Prices
+are split- and dividend-adjusted unless a function name says otherwise.
 """
 from __future__ import annotations
 
@@ -32,22 +36,32 @@ def empty_bars() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="float64") for c in BAR_COLUMNS}, index=index)
 
 
-def filter_regular_hours(bars: pd.DataFrame) -> pd.DataFrame:
-    """Filter an intraday bars frame down to regular trading hours (9:30-16:00 ET, inclusive).
+def filter_regular_hours(bars: pd.DataFrame, bar_minutes: int = 60) -> pd.DataFrame:
+    """Filter a start-stamped intraday bars frame down to bars whose window
+    overlaps regular trading hours (09:30-16:00 ET).
+
+    A bar is kept iff its `[stamp, stamp + bar_minutes)` window intersects
+    `[09:30, 16:00)` -- vendors like Polygon/Massive stamp each aggregate at
+    the start of its window, so for hourly bars (`bar_minutes=60`) the 09:00
+    stamp survives (it holds the 9:30-10:00 regular-hour trades) and the
+    16:00 stamp is dropped (it is entirely after-hours). The trade-off, a
+    deliberate choice: the kept 09:00-stamped bar also contains 9:00-9:30
+    pre-market trades.
 
     Args:
         bars: A bars frame with a tz-aware America/New_York DatetimeIndex.
+        bar_minutes: Length of each bar's window in minutes.
 
     Returns:
-        A copy containing only rows within regular trading hours.
+        A copy containing only rows overlapping regular trading hours.
     """
     if bars.empty:
         return bars.copy()
     localized = bars.index.tz_convert(NY_TZ)
-    times = localized.time
-    start = pd.Timestamp(REGULAR_OPEN).time()
-    end = pd.Timestamp(REGULAR_CLOSE).time()
-    mask = (times >= start) & (times <= end)
+    stamp_minutes = localized.hour * 60 + localized.minute + localized.second / 60
+    open_minutes = int(REGULAR_OPEN[:2]) * 60 + int(REGULAR_OPEN[3:])
+    close_minutes = int(REGULAR_CLOSE[:2]) * 60 + int(REGULAR_CLOSE[3:])
+    mask = (stamp_minutes < close_minutes) & (stamp_minutes + bar_minutes > open_minutes)
     return bars.loc[mask].copy()
 
 
@@ -70,7 +84,8 @@ class DataSource(abc.ABC):
     @abc.abstractmethod
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """Return hourly adjusted OHLCV bars for `ticker` between `start` and `end` (inclusive),
-        filtered to regular trading hours by default.
+        filtered to regular trading hours by `filter_regular_hours` (start-stamped
+        window-overlap convention -- see that function's docstring).
 
         Args:
             ticker: Underlying ticker symbol.

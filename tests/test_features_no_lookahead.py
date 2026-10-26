@@ -13,7 +13,7 @@ from data_universe.features.registry import FEATURE_REGISTRY
 from data_universe.features.registry import compute as compute_feature
 from data_universe.labels.registry import LABEL_REGISTRY
 from data_universe.labels.registry import compute as compute_label
-from data_universe.sources.fakes import FakeMarket, FakePolygonSource
+from data_universe.sources.fakes import FakeMarket, FakePolygonSource, FakeRateSource
 
 _SHORT_END = "2024-04-01"
 _LONG_END = "2024-06-01"
@@ -28,8 +28,14 @@ def _ticker_for(name: str) -> str:
 def test_feature_values_are_unchanged_by_extending_end_date(name):
     source = FakePolygonSource(FakeMarket())
     ticker = _ticker_for(name)
-    short = compute_feature(FEATURE_REGISTRY, name, ticker, _START, _SHORT_END, source)
-    long = compute_feature(FEATURE_REGISTRY, name, ticker, _START, _LONG_END, source)
+    short = compute_feature(
+        FEATURE_REGISTRY, name, ticker, _START, _SHORT_END, source,
+        rate_source=FakeRateSource(),
+    )
+    long = compute_feature(
+        FEATURE_REGISTRY, name, ticker, _START, _LONG_END, source,
+        rate_source=FakeRateSource(),
+    )
     common_index = short.index
     long_over_common = long.loc[common_index]
     pd.testing.assert_series_equal(short, long_over_common, check_names=False)

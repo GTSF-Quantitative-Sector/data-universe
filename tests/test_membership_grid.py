@@ -3,7 +3,11 @@ import pytest
 
 from data_universe import config
 from data_universe.membership import store
-from data_universe.membership.errors import MembershipStaleError, MembershipStaleWarning
+from data_universe.membership.errors import (
+    MembershipError,
+    MembershipStaleError,
+    MembershipStaleWarning,
+)
 from data_universe.membership.grid import mask_like, members_on, membership_grid, status
 from data_universe.membership.schema import SECURITY_MAP_COLUMNS, TICKER_INTERVALS_COLUMNS
 
@@ -145,3 +149,57 @@ def test_mask_like_handles_tz_aware_index_without_raising(two_security_tables):
     assert mask.index.equals(features.index)
     assert str(mask.index.tz) == "America/New_York"
     assert list(mask["AAA-20200101"]) == [True, False]
+
+
+def test_grid_by_ticker_uses_ticker_columns_with_half_open_membership(two_security_tables):
+    sessions = pd.DatetimeIndex(
+        ["2020-01-01", "2020-01-09", "2020-01-10", "2020-01-11"]
+    )
+    grid = membership_grid("sp500", sessions, by="ticker")
+    assert list(grid.columns) == ["AAA", "BBB"]
+    assert list(grid["AAA"]) == [True, True, False, False]
+    assert list(grid["BBB"]) == [False, True, True, True]
+
+
+def test_members_on_by_ticker_returns_tickers(two_security_tables):
+    assert members_on("sp500", "2020-01-09", by="ticker") == ["AAA", "BBB"]
+    assert members_on("sp500", "2020-01-11", by="ticker") == ["BBB"]
+
+
+def test_mask_like_by_ticker_matches_ticker_columns(two_security_tables):
+    features = pd.DataFrame(
+        {"AAA": [1.0], "NOT-IN-INDEX": [2.0]},
+        index=pd.DatetimeIndex(["2020-01-02"]),
+    )
+    mask = mask_like(features, "sp500", by="ticker")
+    assert list(mask.columns) == list(features.columns)
+    assert mask.loc["2020-01-02", "AAA"] == True  # noqa: E712
+    assert mask.loc["2020-01-02", "NOT-IN-INDEX"] == False  # noqa: E712
+
+
+def test_mask_like_by_ticker_never_raises_on_zero_matches(two_security_tables):
+    features = pd.DataFrame(
+        {"ZZZ": [1.0]}, index=pd.DatetimeIndex(["2020-01-02"])
+    )
+    mask = mask_like(features, "sp500", by="ticker")
+    assert list(mask["ZZZ"]) == [False]
+
+
+def test_mask_like_default_raises_on_ticker_columns(two_security_tables):
+    # Ticker columns under by="security_id" match nothing -- an all-False
+    # mask is almost certainly a caller mistake, so this fails loudly.
+    features = pd.DataFrame(
+        {"AAA": [1.0], "BBB": [2.0]}, index=pd.DatetimeIndex(["2020-01-02"])
+    )
+    with pytest.raises(MembershipError, match='by="ticker"'):
+        mask_like(features, "sp500")
+
+
+def test_invalid_by_raises_value_error(two_security_tables):
+    sessions = pd.DatetimeIndex(["2020-01-02"])
+    with pytest.raises(ValueError):
+        membership_grid("sp500", sessions, by="bogus")
+    with pytest.raises(ValueError):
+        members_on("sp500", "2020-01-02", by="bogus")
+    with pytest.raises(ValueError):
+        mask_like(pd.DataFrame({"AAA": [1.0]}, index=sessions), "sp500", by="bogus")

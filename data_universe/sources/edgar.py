@@ -2,12 +2,14 @@
 and ticker-to-CIK lookup.
 
 Uses SEC's per-company submissions JSON
-(`https://data.sec.gov/submissions/CIK##########.json`), whose
-`filings.recent` arrays include each filing's form type, filing date,
-acceptance timestamp, and (for 8-Ks) a comma-separated `items` field listing
-disclosed Item numbers -- e.g. "2.02,9.01". The exact submissions JSON shape
-is flagged as unverified-against-live-docs in `OPEN_QUESTIONS.md`; this
-module is written against that documented shape and mocked in every test.
+(`https://data.sec.gov/submissions/CIK##########.json`). Its
+`filings.recent` arrays cover only roughly the latest year / ~1,000 filings;
+older filings live in the extra pages listed under `filings.files` as
+`{"name": "CIK##########-submissions-NNN.json", ...}`, each fetched from
+`https://data.sec.gov/submissions/<name>` and carrying the same column
+arrays at the top level. Shape verified against live data.sec.gov on
+2026-10-26: `items` is a comma-separated string of Item numbers (e.g.
+"2.02,9.01"), `acceptanceDateTime` is ISO UTC.
 
 CIK lookup uses SEC's public ticker mapping
 (`https://www.sec.gov/files/company_tickers.json`), the same file
@@ -23,8 +25,38 @@ import requests
 from data_universe.cache import cached
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:0>10}.json"
+_SUBMISSIONS_FILES_URL = "https://data.sec.gov/submissions/{name}"
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _EARNINGS_COLUMNS = ["filing_date", "acceptance_datetime", "form", "items"]
+
+
+def _item_202_rows(page: dict) -> list:
+    """Rows for every 8-K (not 8-K/A) disclosing Item 2.02 in one
+    submissions page -- a dict with parallel `form`/`filingDate`/
+    `acceptanceDateTime`/`items` arrays, as found at `filings.recent` or at
+    the top level of each `filings.files` page.
+    """
+    rows = []
+    for form, filing_date, accepted_at, item_str in zip(
+        page.get("form", []),
+        page.get("filingDate", []),
+        page.get("acceptanceDateTime", []),
+        page.get("items", []),
+    ):
+        if form != "8-K":
+            continue  # excludes "8-K/A" and every other form type
+        item_codes = [c.strip() for c in (item_str or "").split(",")]
+        if "2.02" not in item_codes:
+            continue
+        rows.append(
+            {
+                "filing_date": pd.Timestamp(filing_date),
+                "acceptance_datetime": pd.Timestamp(accepted_at),
+                "form": form,
+                "items": item_str,
+            }
+        )
+    return rows
 
 
 class EdgarSource:
@@ -85,25 +117,10 @@ class EdgarSource:
         """
         url = _SUBMISSIONS_URL.format(cik=int(cik))
         data = self._get(url)
-        recent = data.get("filings", {}).get("recent", {})
-        forms = recent.get("form", [])
-        filing_dates = recent.get("filingDate", [])
-        acceptance = recent.get("acceptanceDateTime", [])
-        items = recent.get("items", [])
-        rows = []
-        for form, filing_date, accepted_at, item_str in zip(forms, filing_dates, acceptance, items):
-            if form != "8-K":
-                continue  # excludes "8-K/A" and every other form type
-            item_codes = [c.strip() for c in (item_str or "").split(",")]
-            if "2.02" not in item_codes:
-                continue
-            rows.append(
-                {
-                    "filing_date": pd.Timestamp(filing_date),
-                    "acceptance_datetime": pd.Timestamp(accepted_at),
-                    "form": form,
-                    "items": item_str,
-                }
-            )
-        frame = pd.DataFrame(rows, columns=_EARNINGS_COLUMNS)
+        filings = data.get("filings", {})
+        rows = _item_202_rows(filings.get("recent", {}))
+        for entry in filings.get("files", []):
+            older = self._get(_SUBMISSIONS_FILES_URL.format(name=entry["name"]))
+            rows.extend(_item_202_rows(older))
+        frame = pd.DataFrame(rows, columns=_EARNINGS_COLUMNS).drop_duplicates()
         return frame.sort_values("acceptance_datetime").reset_index(drop=True)

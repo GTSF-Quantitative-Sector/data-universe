@@ -1,9 +1,10 @@
 """File IO for data_universe.membership's committed reference tables.
 
-This is the only module in the package that opens a file. `intervals.py`,
-`grid.py` and `identity.py` call into this module and never touch a path
-themselves -- that split keeps every file-format decision (CSV dtypes, the
-manifest's JSON shape, where `tables_dir()` resolves to) in one place.
+This is the only module in the package that opens a file. `intervals.py`
+and `grid.py` call into this module and never touch a path themselves (as
+will `identity.py`, once identity resolution lands) -- that split keeps
+every file-format decision (CSV dtypes, the manifest's JSON shape, where
+`tables_dir()` resolves to) in one place.
 """
 from __future__ import annotations
 

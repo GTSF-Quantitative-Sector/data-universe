@@ -8,11 +8,18 @@ recorded in `PrecomputeReport.failed` rather than stopping the batch.
 """
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl -- writes stay atomic, unlocked
+    fcntl = None
 
 from data_universe import config
 from data_universe.features.registry import FEATURE_REGISTRY
@@ -52,16 +59,41 @@ def _output_path(name: str, out_dir: Optional[str]) -> Path:
 def _upsert_parquet(path: Path, new_rows: pd.DataFrame) -> None:
     """Merge `new_rows` into the parquet file at `path` on `(date, ticker)`, new rows
     winning on a key collision. Creates the file (and its parent directory) if absent.
+
+    Safe for concurrent writers: on POSIX the whole read-merge-write is
+    serialized by an exclusive `fcntl.flock` on the sibling lock file
+    `<dir>/.<name>.parquet.lock`, and the merged frame is written to a temp
+    file in the same directory then moved onto `path` with `os.replace` --
+    so a reader never sees a half-written file and a failed write leaves the
+    previous file byte-identical and no temp file behind. On Windows (`fcntl`
+    unavailable) there is no lock; the atomic write still applies.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        existing = pd.read_parquet(path)
-        combined = pd.concat([existing, new_rows], ignore_index=True)
-    else:
-        combined = new_rows
-    combined = combined.drop_duplicates(subset=["date", "ticker"], keep="last")
-    combined = combined.sort_values(["date", "ticker"]).reset_index(drop=True)
-    combined.to_parquet(path, index=False)
+    with open(path.parent / f".{path.name}.lock", "a") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            if path.exists():
+                existing = pd.read_parquet(path)
+                combined = pd.concat([existing, new_rows], ignore_index=True)
+            else:
+                combined = new_rows
+            combined = combined.drop_duplicates(subset=["date", "ticker"], keep="last")
+            combined = combined.sort_values(["date", "ticker"]).reset_index(drop=True)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp"
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                os.close(fd)
+                combined.to_parquet(tmp_path, index=False)
+                os.replace(tmp_path, path)
+            except BaseException:
+                tmp_path.unlink(missing_ok=True)
+                raise
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def precompute(
@@ -71,6 +103,7 @@ def precompute(
     end: str,
     out_dir: Optional[str] = None,
     source: Optional[DataSource] = None,
+    **kwargs,
 ) -> PrecomputeReport:
     """Compute every (feature_name, ticker) pair over `[start, end]` and write results
     to `<out_dir>/<feature_name>.parquet` in long format (`date, ticker, value`).
@@ -82,6 +115,9 @@ def precompute(
         end: End date, "YYYY-MM-DD".
         out_dir: Output directory. Defaults to `<config.get_data_dir()>/processed`.
         source: Data source passed to `compute()`. Defaults to a real `PolygonSource()`.
+        **kwargs: Forwarded to `compute()` for every pair -- e.g.
+            `precompute(..., rate_source=FredSource())` for
+            `ret_excess_1d`/`beta_*`/`alpha_*`.
 
     Returns:
         A `PrecomputeReport` of rows written and errors, keyed by `(ticker, feature_name)`.
@@ -102,7 +138,9 @@ def precompute(
         rows_by_ticker: Dict[str, pd.DataFrame] = {}
         for ticker in tickers:
             try:
-                series = _compute(registry, name, ticker, start, end, active_source)
+                series = _compute(
+                    registry, name, ticker, start, end, active_source, **kwargs
+                )
             except Exception as exc:  # noqa: BLE001 - isolate any failure, report it
                 report.failed[(ticker, name)] = str(exc)
                 continue

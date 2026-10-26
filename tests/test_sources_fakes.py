@@ -1,9 +1,16 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from data_universe.sources.base import BAR_COLUMNS, filter_regular_hours
+from data_universe.sources.base import BAR_COLUMNS
 from data_universe.sources.fakes import FakeMarket, FakePolygonSource
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_daily_bars_has_expected_columns_dtype_and_index():
@@ -58,12 +65,61 @@ def test_vix_closes_are_constant_at_configured_level():
     assert len(closes) > 0
 
 
-def test_hourly_bars_filtering_removes_pre_open_bar():
+def test_hourly_bars_mimic_raw_vendor_stamps_including_pre_and_post():
     market = FakeMarket()
     bars = market.hourly_bars("AAPL", "2023-01-03", "2023-01-03")
-    filtered = filter_regular_hours(bars)
-    assert len(filtered) < len(bars)
-    assert len(filtered) > 0
+    # Nine start-stamped bars per session, like raw vendor aggregates:
+    # a pre-open 08:00 stamp and an after-hours 16:00 stamp.
+    assert len(bars) == 9
+    assert [t.hour for t in bars.index] == list(range(8, 17))
+
+
+def test_fake_polygon_source_hourly_bars_filters_to_regular_hours():
+    source = FakePolygonSource()
+    bars = source.hourly_bars("AAPL", "2023-01-03", "2023-01-03")
+    assert len(bars) == 7
+    assert [t.hour for t in bars.index] == list(range(9, 16))
+
+
+def test_same_date_has_same_price_across_request_windows():
+    market = FakeMarket()
+    narrow = market.daily_bars("AAPL", "2023-02-01", "2023-02-28")
+    wide = market.daily_bars("AAPL", "2023-01-01", "2023-03-31")
+    pd.testing.assert_frame_equal(narrow, wide.loc[narrow.index])
+    narrow_h = market.hourly_bars("AAPL", "2023-02-01", "2023-02-10")
+    wide_h = market.hourly_bars("AAPL", "2023-01-01", "2023-03-01")
+    pd.testing.assert_frame_equal(narrow_h, wide_h.loc[narrow_h.index])
+
+
+def test_bars_are_identical_across_processes_with_different_hash_seeds():
+    # PYTHONHASHSEED randomizes hash() per process; the fake must not depend on
+    # it, or the same code would emit different bars on different machines/runs.
+    code = (
+        "from data_universe.sources.fakes import FakeMarket\n"
+        "m = FakeMarket()\n"
+        "print(m.daily_bars('SPY', '2024-01-01', '2024-02-01')['close'].iloc[-1])\n"
+        "print(m.hourly_bars('AAPL', '2024-01-02', '2024-01-02')['close'].tolist())"
+    )
+    outputs = []
+    for hashseed in ("0", "1"):
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=_REPO_ROOT,
+            env={**os.environ, "PYTHONHASHSEED": hashseed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outputs.append(result.stdout.strip())
+    assert outputs[0] == outputs[1]
+
+
+def test_start_before_epoch_raises():
+    market = FakeMarket()
+    with pytest.raises(ValueError, match="epoch"):
+        market.daily_bars("AAPL", "1989-12-01", "2023-01-01")
+    with pytest.raises(ValueError, match="epoch"):
+        market.hourly_bars("AAPL", "1989-12-01", "2023-01-01")
 
 
 def test_fake_polygon_source_daily_bars_delegates_to_market():

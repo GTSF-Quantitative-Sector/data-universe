@@ -4,21 +4,33 @@
 (default "SPY") daily/hourly random walk, and every other ticker's return is a
 fixed linear function of the proxy's return -- `stock_return = alpha + beta *
 proxy_return + noise` -- so tests can check statistics (e.g. rolling OLS beta)
-against a known planted truth instead of against the code itself.
+against a known planted truth instead of against the code itself. The same
+`seed` produces the same bars in any process (the RNG is keyed by SHA-256, not
+`hash()`) and for any request window (each series is generated from `_EPOCH`
+and sliced, so a wider window's bars are a strict extension of a narrower
+one's -- the same date always has the same price).
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from data_universe.sources.base import BAR_COLUMNS, NY_TZ
+from data_universe.sources.base import BAR_COLUMNS, NY_TZ, filter_regular_hours
 
 DEFAULT_SEED = 20240101
 PLANTED_BETA = 1.5
 PLANTED_ALPHA = 0.0
 PLANTED_VIX = 16.0
+
+_EPOCH = "1990-01-01"
+_STAMPS_PER_SESSION = {"1d": 1, "1h": 9}
+# Per-freq (loc, scale) for the market's log returns, and the noise scale for
+# non-proxy tickers.
+_DAILY_PARAMS = (0.0003, 0.01, 0.005)
+_HOURLY_PARAMS = (0.00005, 0.003, 0.0015)
 
 
 def _session_index(start: str, end: str, freq: str) -> pd.DatetimeIndex:
@@ -27,15 +39,18 @@ def _session_index(start: str, end: str, freq: str) -> pd.DatetimeIndex:
     Args:
         start: Start date, "YYYY-MM-DD".
         end: End date, "YYYY-MM-DD".
-        freq: "1d" for one stamp per session (midnight), "1h" for seven
-            hourly stamps (09:00-15:00) per session.
+        freq: "1d" for one stamp per session (midnight), "1h" for nine
+            hourly stamps (08:00-16:00) per session, mimicking raw vendor
+            aggregates (pre-open and after-hours stamps included).
     """
     if freq == "1d":
         return pd.bdate_range(start, end, tz=NY_TZ, name="timestamp")
     if freq == "1h":
         sessions = pd.bdate_range(start, end)
-        hours = pd.timedelta_range("09:00:00", "15:00:00", freq="1h")
-        stamps = [pd.Timestamp(day.date()) + h for day in sessions for h in hours]
+        hours = np.arange(8, 17)
+        stamps = sessions.repeat(len(hours)) + pd.to_timedelta(
+            np.tile(hours, len(sessions)), unit="h"
+        )
         return pd.DatetimeIndex(stamps, name="timestamp").tz_localize(NY_TZ)
     raise ValueError(f"Unsupported freq: {freq!r}")
 
@@ -68,7 +83,8 @@ class FakeMarket:
     """A reproducible synthetic market shared by tests across the whole package.
 
     Args:
-        seed: RNG seed. The same seed always produces the same bars.
+        seed: RNG seed. The same seed produces the same bars in any process
+            and for any request window.
         beta: Planted beta of every non-proxy ticker against `proxy_ticker`.
         alpha: Planted daily log-return alpha of every non-proxy ticker.
         proxy_ticker: The market proxy ticker (default "SPY").
@@ -90,38 +106,54 @@ class FakeMarket:
         self.vix_level = vix_level
 
     def _rng(self, ticker: str, freq: str) -> np.random.Generator:
-        """Deterministic per-(seed, ticker, freq) generator, so repeated calls agree."""
-        key = abs(hash((self.seed, ticker, freq))) % (2**32)
+        """Deterministic per-(seed, ticker, freq) generator, stable across
+        processes (`hash()` would be salted differently by each process's
+        PYTHONHASHSEED).
+        """
+        key = int.from_bytes(
+            hashlib.sha256(f"{self.seed}|{ticker}|{freq}".encode()).digest()[:8], "little"
+        )
         return np.random.default_rng(key)
 
     def daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """Deterministic daily bars. `ticker == proxy_ticker` is the market itself;
         any other ticker is `alpha + beta * proxy_return + noise`.
+
+        Raises:
+            ValueError: If `start` is before `_EPOCH`.
         """
-        index = _session_index(start, end, "1d")
-        n = len(index)
-        market_returns = self._rng(self.proxy_ticker, "1d").normal(0.0003, 0.01, size=n)
-        if ticker == self.proxy_ticker:
-            returns = market_returns
-        else:
-            noise = self._rng(ticker, "1d").normal(0.0, 0.005, size=n)
-            returns = self.alpha + self.beta * market_returns + noise
-        return _bars_from_log_returns(index, returns, start_price=100.0)
+        return self._bars(ticker, start, end, "1d")
 
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """Deterministic hourly bars, same planted alpha/beta relationship as `daily_bars`.
-        Includes one pre-open (09:00) stamp per session so `filter_regular_hours` has
-        something real to filter in tests.
+        """Deterministic hourly bars, same planted alpha/beta relationship as
+        `daily_bars`. Nine start-stamped bars per session (08:00-16:00),
+        mimicking raw vendor aggregates -- including a pre-open (08:00) and an
+        after-hours (16:00) stamp, so `filter_regular_hours`/`hourly_bars`
+        callers filter them like the real sources do.
+
+        Raises:
+            ValueError: If `start` is before `_EPOCH`.
         """
-        index = _session_index(start, end, "1h")
-        n = len(index)
-        market_returns = self._rng(self.proxy_ticker, "1h").normal(0.00005, 0.003, size=n)
+        return self._bars(ticker, start, end, "1h")
+
+    def _bars(self, ticker: str, start: str, end: str, freq: str) -> pd.DataFrame:
+        """Generate the per-(ticker, freq) sequence from `_EPOCH` through `end`
+        and slice it down to `[start, end]`, so every window of the same series
+        sees identical prices for a given date.
+        """
+        if pd.Timestamp(start) < pd.Timestamp(_EPOCH):
+            raise ValueError(f"start {start!r} precedes FakeMarket's epoch {_EPOCH!r}")
+        index = _session_index(_EPOCH, end, freq)
+        loc, scale, noise_scale = _DAILY_PARAMS if freq == "1d" else _HOURLY_PARAMS
+        market_returns = self._rng(self.proxy_ticker, freq).normal(loc, scale, size=len(index))
         if ticker == self.proxy_ticker:
             returns = market_returns
         else:
-            noise = self._rng(ticker, "1h").normal(0.0, 0.0015, size=n)
+            noise = self._rng(ticker, freq).normal(0.0, noise_scale, size=len(index))
             returns = self.alpha + self.beta * market_returns + noise
-        return _bars_from_log_returns(index, returns, start_price=100.0)
+        bars = _bars_from_log_returns(index, returns, start_price=100.0)
+        offset = np.busday_count(_EPOCH, start) * _STAMPS_PER_SESSION[freq]
+        return bars.iloc[offset:]
 
     def vix_closes(self, start: str, end: str) -> pd.Series:
         """Constant VIX close series (`vix_level`) over the given session range."""
@@ -145,8 +177,12 @@ class FakePolygonSource:
         return self.market.daily_bars(ticker, start, end)
 
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """See `FakeMarket.hourly_bars`."""
-        return self.market.hourly_bars(ticker, start, end)
+        """`FakeMarket.hourly_bars` filtered to regular hours, honoring the
+        `DataSource.hourly_bars` contract like `PolygonSource` does: 7 bars
+        per session, stamped 09:00-15:00 ET."""
+        return filter_regular_hours(
+            self.market.hourly_bars(ticker, start, end), bar_minutes=60
+        )
 
     def index_daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """Fake index aggregates. Only "I:VIX" is supported.
@@ -172,3 +208,39 @@ class FakePolygonSource:
                 "vwap": closes,
             }
         )[BAR_COLUMNS]
+
+
+class FakeRateSource:
+    """A constant risk-free rate source mirroring `FredSource.daily_rate`'s
+    units (decimal per-trading-day rate), for tests and users without a FRED
+    key.
+
+    Args:
+        annual_rate: Decimal annualized rate (0.05 = 5%).
+    """
+
+    def __init__(self, annual_rate: float = 0.05) -> None:
+        self.annual_rate = annual_rate
+
+    def daily_rate(
+        self,
+        series_id: str = "DTB3",
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> pd.Series:
+        """`annual_rate / 252` on every business day in `[start, end]`.
+
+        Args:
+            series_id: Series name to give the returned Series.
+            start: Start date "YYYY-MM-DD"; None means the fake epoch.
+            end: End date "YYYY-MM-DD"; None means today.
+
+        Returns:
+            A decimal daily-rate `pd.Series` indexed by tz-naive business-day
+            date named "date", named `series_id` -- same units as
+            `FredSource.daily_rate`.
+        """
+        index = pd.bdate_range(
+            start or _EPOCH, end or pd.Timestamp.today().strftime("%Y-%m-%d"), name="date"
+        )
+        return pd.Series(self.annual_rate / 252.0, index=index, name=series_id)

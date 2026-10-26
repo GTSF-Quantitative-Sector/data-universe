@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from data_universe.features import core
@@ -21,6 +22,18 @@ def _daily_frame(ticker: str, start: str, end: str, source) -> pd.DataFrame:
     return frame
 
 
+def _daily_rf(rate_source, index: pd.DatetimeIndex, start: str, end: str) -> pd.Series:
+    """Daily risk-free rate aligned onto `index`, forward-filling the last
+    known rate so sessions FRED doesn't publish on (bond holidays when stocks
+    trade) carry the previous rate instead of 0. The fetch reaches 14 calendar
+    days before `start` so a rate exists to carry into the first sessions;
+    leading dates with no prior observation stay NaN.
+    """
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+    rate = rate_source.daily_rate(start=fetch_start, end=end)
+    return rate.reindex(rate.index.union(index)).ffill().reindex(index)
+
+
 @register("ret_1d", warmup_trading_days=1, project="beta", description="1-day simple return")
 def ret_1d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     closes = _daily_frame(ticker, start, end, source)["close"]
@@ -31,15 +44,18 @@ def ret_1d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     "ret_excess_1d",
     warmup_trading_days=1,
     project="beta",
-    description="1-day return minus the daily risk-free rate (0 if no rate_source given)",
+    description="1-day return minus the daily risk-free rate (requires rate_source)",
 )
 def ret_excess_1d(
     ticker: str, start: str, end: str, source, rate_source=None, **kwargs
 ) -> pd.Series:
-    raw = ret_1d(ticker, start, end, source)
     if rate_source is None:
-        return raw.rename("ret_excess_1d")
-    rate = rate_source.daily_rate(start=start, end=end).reindex(raw.index).fillna(0.0)
+        raise ValueError(
+            "ret_excess_1d requires a rate_source (e.g. FredSource()) -- pass it "
+            "via compute(..., rate_source=...) or precompute(..., rate_source=...)"
+        )
+    raw = ret_1d(ticker, start, end, source)
+    rate = _daily_rf(rate_source, raw.index, start, end)
     return (raw - rate).rename("ret_excess_1d")
 
 
@@ -105,11 +121,17 @@ def adv_usd_20d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Serie
     return dollar_volume.rolling(20).mean().rename("adv_usd_20d")
 
 
-def _beta_alpha(ticker: str, start: str, end: str, source, window: int):
+def _beta_alpha(ticker: str, start: str, end: str, source, window: int, rate_source=None):
     asset_closes = _daily_frame(ticker, start, end, source)["close"]
     market_closes = _daily_frame(_PROXY_TICKER, start, end, source)["close"]
     asset_returns = core.log_returns(asset_closes)
     market_returns = core.log_returns(market_closes).reindex(asset_returns.index)
+    if rate_source is not None:
+        # Excess-return regression per PLAN.md §7: subtract log(1 + rf) from
+        # both sides' log returns before the OLS.
+        rf = _daily_rf(rate_source, asset_returns.index, start, end)
+        asset_returns = asset_returns - np.log1p(rf)
+        market_returns = market_returns - np.log1p(rf)
     return core.rolling_ols_beta_alpha(asset_returns, market_returns, window)
 
 
@@ -117,10 +139,12 @@ def _beta_alpha(ticker: str, start: str, end: str, source, window: int):
     "beta_ols_60d",
     warmup_trading_days=61,
     project="beta",
-    description="60d rolling OLS beta vs. SPY",
+    description="60d rolling OLS beta vs. SPY (excess returns when rate_source is given)",
 )
-def beta_ols_60d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
-    beta, _ = _beta_alpha(ticker, start, end, source, window=60)
+def beta_ols_60d(
+    ticker: str, start: str, end: str, source, rate_source=None, **kwargs
+) -> pd.Series:
+    beta, _ = _beta_alpha(ticker, start, end, source, window=60, rate_source=rate_source)
     return beta.rename("beta_ols_60d")
 
 
@@ -128,10 +152,12 @@ def beta_ols_60d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Seri
     "beta_ols_90d",
     warmup_trading_days=91,
     project="beta",
-    description="90d rolling OLS beta vs. SPY",
+    description="90d rolling OLS beta vs. SPY (excess returns when rate_source is given)",
 )
-def beta_ols_90d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
-    beta, _ = _beta_alpha(ticker, start, end, source, window=90)
+def beta_ols_90d(
+    ticker: str, start: str, end: str, source, rate_source=None, **kwargs
+) -> pd.Series:
+    beta, _ = _beta_alpha(ticker, start, end, source, window=90, rate_source=rate_source)
     return beta.rename("beta_ols_90d")
 
 
@@ -139,10 +165,12 @@ def beta_ols_90d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Seri
     "alpha_ols_60d",
     warmup_trading_days=61,
     project="beta",
-    description="60d rolling OLS alpha vs. SPY",
+    description="60d rolling OLS alpha vs. SPY (excess returns when rate_source is given)",
 )
-def alpha_ols_60d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
-    _, alpha = _beta_alpha(ticker, start, end, source, window=60)
+def alpha_ols_60d(
+    ticker: str, start: str, end: str, source, rate_source=None, **kwargs
+) -> pd.Series:
+    _, alpha = _beta_alpha(ticker, start, end, source, window=60, rate_source=rate_source)
     return alpha.rename("alpha_ols_60d")
 
 
@@ -150,10 +178,12 @@ def alpha_ols_60d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Ser
     "alpha_ols_90d",
     warmup_trading_days=91,
     project="beta",
-    description="90d rolling OLS alpha vs. SPY",
+    description="90d rolling OLS alpha vs. SPY (excess returns when rate_source is given)",
 )
-def alpha_ols_90d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
-    _, alpha = _beta_alpha(ticker, start, end, source, window=90)
+def alpha_ols_90d(
+    ticker: str, start: str, end: str, source, rate_source=None, **kwargs
+) -> pd.Series:
+    _, alpha = _beta_alpha(ticker, start, end, source, window=90, rate_source=rate_source)
     return alpha.rename("alpha_ols_90d")
 
 

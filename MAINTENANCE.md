@@ -10,19 +10,38 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: bumped to `"0.2.0"`** after 40 commits across 7 implementation phases where it was
-not followed. Follow the rule from here on — bump both on every merged change, not just when
-someone notices the drift.
+**Status: current version is `"0.5.0"`.** The rule lapsed twice: 40 commits across 7
+implementation phases shipped before the first bump to `"0.2.0"`, and 0.4.0's disk-cache
+work then shipped without a bump being recorded here either. Follow the rule from here
+on — bump both on every merged change, not just when someone notices the drift.
 
 ## 2. S&P 500 historical membership
 
-Point-in-time membership (`sources.sec_adapter.sp500(query_date=...)`) is a pass-through to
-`sec_parser`'s `lookups.get_sp500_tickers()`, which reads a manually-maintained
-`sp500_historical.csv` **in the `sec_parser` repo, not this one**. This repo has no
-maintenance task of its own here — the "steps below should be completed monthly" note and
-its instructions live in `sec_parser`'s own `sec/data/sp500/README.md`. Don't duplicate that
-file's maintenance burden into this repo; just keep the `sec_parser` dependency
-(`pip install ".[sec]"`) reasonably current.
+Point-in-time S&P 500 membership now lives in this repo: `data_universe/membership/tables/sp500`,
+vendored from [fja05680/sp500](https://github.com/fja05680/sp500) and queried via
+`data_universe.membership` (`sp500_intervals`, `membership_grid`, `mask_like`,
+`members_on`, `status`). `status()` and `membership_grid()` warn once the tables are more
+than `membership_max_staleness_days` (default 45) days past `verified_through`, and
+`strict=True` raises — so refresh monthly or after S&P changes. From a repo checkout:
+
+```bash
+python -m data_universe.membership.refresh --dry-run   # what would change
+python -m data_universe.membership.refresh             # upstream's latest commit
+python -m data_universe.membership.refresh --ref SHA   # a specific upstream commit
+```
+
+Then review `git diff`, run `pytest`, bump the version, and commit. The tool validates the
+upstream file (exact `date,tickers` header, strictly ascending dates, 480–520 members in
+the latest snapshot, no overlapping intervals), keeps existing
+`security_map`/`security_master` rows for intervals that still exist (reviewed mappings
+survive), gives new intervals provisional `<ticker>-<YYYYMMDD>` ids, rewrites
+`ticker_intervals.csv`, `security_map.csv`, `security_master.csv` and `manifest.json`
+(`verified_through` = run date, UTC), and leaves `ticker_history.csv`/`tail_changes.csv`
+alone; provenance is in `tables/sp500/README.md`.
+
+`sources/sec_adapter.sp500(query_date=...)` stays an optional alternative, maintained in
+the `sec_parser` repo (`pip install ".[sec]"`) — its upkeep instructions live in
+`sec_parser`'s own `sec/data/sp500/README.md`.
 
 ## 3. API keys
 

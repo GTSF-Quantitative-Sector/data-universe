@@ -41,6 +41,21 @@ def test_grid_column_sums_match_interval_lengths_sampled():
     assert 480 <= len(q.membership.members_on("sp500", "2020-06-15")) <= 520
 
 
+def test_mask_like_by_ticker_end_to_end():
+    features = pd.DataFrame(
+        {"AAPL": [1.0]},
+        index=pd.DatetimeIndex(["2020-06-15"]),
+    )
+    mask = q.membership.mask_like(features, "sp500", by="ticker")
+    assert mask.iloc[0, 0] == True  # noqa: E712
+
+
+def test_members_on_by_ticker_returns_tickers_end_to_end():
+    members = q.membership.members_on("sp500", "2020-06-15", by="ticker")
+    assert "AAPL" in members
+    assert 480 <= len(members) <= 520
+
+
 def test_status_reports_real_verified_through():
     result = q.membership.status("sp500")
     assert result["verified_through"] is not None

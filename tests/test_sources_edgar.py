@@ -136,3 +136,41 @@ def test_repeat_call_is_served_from_cache():
     source.earnings_8k_filings("320193")
     source.earnings_8k_filings("320193")
     assert session.get.call_count == 1
+
+
+def test_earnings_8k_filings_pages_through_filings_files():
+    recent = _submissions([("8-K", "2024-01-02", "2024-01-02T16:05:00.000Z", "2.02")])
+    recent["filings"]["files"] = [
+        {
+            "name": "CIK0000320193-submissions-001.json",
+            "filingCount": 800,
+            "filingFrom": "1995-01-01",
+            "filingTo": "2015-10-01",
+        }
+    ]
+    # Older pages carry the same column arrays at the TOP level.
+    older_page = {
+        "form": ["8-K", "10-K", "8-K"],
+        "filingDate": ["2015-04-27", "2015-10-28", "2015-01-27"],
+        "acceptanceDateTime": [
+            "2015-04-27T21:00:00.000Z",
+            "2015-10-28T20:00:00.000Z",
+            "2015-01-27T21:00:00.000Z",
+        ],
+        "items": ["2.02,9.01", "", "2.02,8.01"],
+    }
+    session = Mock()
+    session.get.side_effect = [FakeResponse(recent), FakeResponse(older_page)]
+    source = EdgarSource(session=session, user_agent="my-org contact@example.org")
+    filings = source.earnings_8k_filings("320193")
+    assert list(filings["filing_date"]) == [
+        pd.Timestamp("2015-01-27"),
+        pd.Timestamp("2015-04-27"),
+        pd.Timestamp("2024-01-02"),
+    ]
+    assert session.get.call_count == 2
+    second_call = session.get.call_args_list[1]
+    assert second_call[0][0] == (
+        "https://data.sec.gov/submissions/CIK0000320193-submissions-001.json"
+    )
+    assert second_call[1]["headers"]["User-Agent"] == "my-org contact@example.org"

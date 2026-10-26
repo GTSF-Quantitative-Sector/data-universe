@@ -1,8 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 import pytest
 
+from data_universe.features import registry
 from data_universe.precompute import load_feature, precompute
-from data_universe.sources.fakes import FakePolygonSource
+from data_universe.sources.fakes import FakePolygonSource, FakeRateSource
 
 
 def test_precompute_writes_one_feature_one_ticker_to_parquet(tmp_path):
@@ -135,3 +138,69 @@ def test_precompute_accepts_a_label_name(tmp_path):
     assert report.succeeded[("AAPL", "fwd_ret_15d")] > 0
     frame = pd.read_parquet(tmp_path / "fwd_ret_15d.parquet")
     assert (frame["ticker"] == "AAPL").all()
+
+
+def test_precompute_forwards_rate_source_to_compute(tmp_path):
+    source = FakePolygonSource()
+    report = precompute(
+        ["AAPL"], ["ret_excess_1d"], "2024-03-01", "2024-03-15",
+        out_dir=str(tmp_path), source=source,
+        rate_source=FakeRateSource(annual_rate=0.05),
+    )
+    assert report.failed == {}
+    frame = pd.read_parquet(tmp_path / "ret_excess_1d.parquet")
+    raw = registry.compute(
+        registry.FEATURE_REGISTRY, "ret_1d", "AAPL", "2024-03-01", "2024-03-15", source
+    )
+    expected = (raw - 0.05 / 252.0).dropna().rename("value")
+    written = frame.set_index("date")["value"].sort_index()
+    pd.testing.assert_series_equal(written, expected, check_freq=False)
+
+
+def test_precompute_ret_excess_1d_without_rate_source_fails_loudly(tmp_path):
+    report = precompute(
+        ["AAPL"], ["ret_excess_1d"], "2024-03-01", "2024-03-15",
+        out_dir=str(tmp_path), source=FakePolygonSource(),
+    )
+    assert ("AAPL", "ret_excess_1d") in report.failed
+    assert "rate_source" in report.failed[("AAPL", "ret_excess_1d")]
+    assert not (tmp_path / "ret_excess_1d.parquet").exists()
+
+
+def test_precompute_concurrent_writers_all_land(tmp_path):
+    source = FakePolygonSource()
+    tickers = ["AAPL", "MSFT", "GOOG", "AMZN"]
+
+    def _run(ticker):
+        return precompute(
+            [ticker], ["ret_1d"], "2024-01-02", "2024-01-31",
+            out_dir=str(tmp_path), source=source,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(_run, tickers))
+
+    frame = pd.read_parquet(tmp_path / "ret_1d.parquet")
+    assert set(frame["ticker"]) == set(tickers)
+    assert not frame.duplicated(subset=["date", "ticker"]).any()
+
+
+def test_failed_write_leaves_existing_parquet_and_no_temp_files(tmp_path, monkeypatch):
+    source = FakePolygonSource()
+    precompute(
+        ["AAPL"], ["ret_1d"], "2024-01-02", "2024-01-31",
+        out_dir=str(tmp_path), source=source,
+    )
+    before = (tmp_path / "ret_1d.parquet").read_bytes()
+
+    def _boom(self, *args, **kwargs):
+        raise RuntimeError("simulated disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _boom)
+    with pytest.raises(RuntimeError, match="disk full"):
+        precompute(
+            ["MSFT"], ["ret_1d"], "2024-01-02", "2024-02-15",
+            out_dir=str(tmp_path), source=source,
+        )
+    assert (tmp_path / "ret_1d.parquet").read_bytes() == before
+    assert list(tmp_path.glob("*.tmp")) == []

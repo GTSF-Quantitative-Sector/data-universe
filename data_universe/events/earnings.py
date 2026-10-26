@@ -4,8 +4,8 @@ inputs), and the options toolkit (the ATM straddle chosen at day0).
 
 Every "spec issue to flag" from `PLAN.md` §8 gets its own named column here,
 never silently resolved:
-  1. sigma_pre_daily      -- daily (not annualized) stdev of log returns,
-                             30 trading days ending at pre_session.
+  1. sigma_pre_daily      -- daily (not annualized) stdev of the 30 log
+                             returns (31 closes) ending at pre_session.
   2. adv_usd_pre20 / adv_usd_day0_day1 -- only these two liquidity windows;
                              no post-entry-window average is computed.
   4. days_to_expiry        -- nearest expiry strictly after day0; a bias
@@ -29,6 +29,7 @@ import pandas as pd
 from data_universe import calendar
 from data_universe.features import core
 from data_universe.options import chain
+from data_universe.sources.base import NY_TZ
 
 _EVENT_COLUMNS = [
     "ticker", "event_date", "pre_session", "day0", "day1", "sigma_pre_daily",
@@ -88,7 +89,12 @@ def build_pead_events(
 
 
 def _build_one_event(ticker, filing, session_index, price_source, options_source):
-    event_date = pd.Timestamp(filing["acceptance_datetime"]).tz_localize(None).normalize()
+    # EDGAR acceptanceDateTime is ISO UTC -- convert to New York before
+    # normalizing so an evening filing on date D lands on D, not D+1.
+    accepted = pd.Timestamp(filing["acceptance_datetime"])
+    if accepted.tz is not None:
+        accepted = accepted.tz_convert(NY_TZ)
+    event_date = accepted.tz_localize(None).normalize()
 
     day0 = (
         event_date
@@ -102,7 +108,7 @@ def _build_one_event(ticker, filing, session_index, price_source, options_source
     if pre_session is None or day1 is None:
         return None
 
-    pre_window_start = calendar.shift_sessions(session_index, pre_session, -29)
+    pre_window_start = calendar.shift_sessions(session_index, pre_session, -30)
     if pre_window_start is None:
         return None
     bars = price_source.daily_bars(
@@ -117,6 +123,8 @@ def _build_one_event(ticker, filing, session_index, price_source, options_source
     dollar_volume = bars["close"] * bars["volume"]
     dollar_volume.index = closes.index
     adv_usd_pre20 = dollar_volume.loc[dollar_volume.index <= pre_session].tail(20).mean()
+    if day0 not in closes.index or day1 not in closes.index:
+        return None  # halt/no bar on day0 or day1 -- skip just this event
     adv_usd_day0_day1 = dollar_volume.loc[[day0, day1]].mean()
 
     try:

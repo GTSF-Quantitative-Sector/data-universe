@@ -10,7 +10,7 @@ surprise — so each stops re-writing its own Polygon/EDGAR/FRED plumbing.
 pip install -e .
 
 # optional extras:
-pip install -e ".[sec]"   # sec_parser fundamentals / point-in-time S&P 500 membership
+pip install -e ".[sec]"   # sec_parser fundamentals / S&P 500 membership (alternative to the built-in membership/)
 pip install -e ".[s3]"    # boto3, reserved for the not-yet-built flat-files source
 pip install -e ".[dev]"   # pytest, ruff
 ```
@@ -82,17 +82,31 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   `FEATURE_REGISTRY`, `compute()`) and 14 concrete registered features in `library.py`:
   `ret_1d`, `ret_excess_1d`, `ret_21d`, `rv_cc_21d`, `rv_parkinson_21d`, `rv_gk_21d`,
   `dollar_volume_1d`, `adv_usd_20d`, `beta_ols_60d`, `beta_ols_90d`, `alpha_ols_60d`,
-  `alpha_ols_90d`, `iv_index`, `vrp_signal_rv21`.
+  `alpha_ols_90d`, `iv_index`, `vrp_signal_rv21`. `ret_excess_1d` requires
+  `compute(..., rate_source=...)` (e.g. `FredSource()` or `FakeRateSource()`); the
+  `beta_*`/`alpha_*` features run an excess-return regression when `rate_source` is
+  given and a raw-return regression without it.
 - **`labels/`** — the same registry shape (`registry.py`, `LABEL_REGISTRY`), enforcing that
   every name starts with `fwd_`, and 3 concrete labels in `library.py`: `fwd_rv_cc_21d`,
   `fwd_vrp_expost`, `fwd_ret_15d`.
 - **`events/earnings.py`** — `build_pead_events(...)`: one row per qualifying 8-K Item 2.02
   filing, combining `EdgarSource`, price bars, and the options chain into the PEAD event
   table (schema in `CONTRACTS.md`).
+- **`membership/`** — point-in-time S&P 500 membership from vendored
+  [fja05680/sp500](https://github.com/fja05680/sp500) tables: `sp500_intervals`,
+  `membership_grid`, `mask_like`, `members_on`, `status`, keyed by
+  `by="security_id"` (provisional `<ticker>-<YYYYMMDD>` ids — don't persist them) or
+  `by="ticker"` (upstream's symbol per interval; renames not linked). `status()`/the
+  grid warn once the data is more than 45 days past `verified_through`
+  (`strict=True` raises). Refresh monthly or after index changes with
+  `python -m data_universe.membership.refresh [--ref REF] [--dry-run]`; see
+  `MAINTENANCE.md` item 2.
 - **`precompute.py`** — `precompute(tickers, feature_names, start, end, out_dir=None,
-  source=None)` batch-computes to parquet with upsert-on-rerun and per-pair failure
-  isolation (`PrecomputeReport`), and `load_feature(name, tickers=None, out_dir=None)` reads
-  the result back.
+  source=None, **kwargs)` batch-computes to parquet with upsert-on-rerun, per-pair
+  failure isolation (`PrecomputeReport`), and an flocked + atomic write so concurrent
+  writers can't corrupt a file; extra `**kwargs` (e.g. `rate_source=FredSource()`)
+  are forwarded to `compute()` for every pair. `load_feature(name, tickers=None,
+  out_dir=None)` reads the result back.
 
 ## Index universes
 
@@ -116,17 +130,36 @@ load_universe("sp500")                                              # newest sav
 constituent lists); `nasdaq_listed` is every active Nasdaq-listed common stock from Massive
 reference data, which is not the Nasdaq-100. Massive is called once for the active-stock
 list (roughly a dozen paginated requests) and adds `in_massive`, `primary_exchange`, `type`,
-`cik` and FIGI columns to each universe. **These are today's memberships**: for backtests use
-`q.universe.sp500(query_date=...)`. To pull bars from the Massive host, use `MassiveSource`
-(it has the same `daily_bars`/`hourly_bars` methods as `PolygonSource`). See
-`OPEN_QUESTIONS.md` items 15-17.
+`cik` and FIGI columns to each universe. **These are today's memberships**: for backtests
+use `q.membership` (below); `q.universe.sp500(query_date=...)` via the optional
+`sec_parser` dependency is the alternative. To pull bars from the Massive host, use
+`MassiveSource` (it has the same `daily_bars`/`hourly_bars` methods as `PolygonSource`).
+See `OPEN_QUESTIONS.md` items 15-17.
+
+## Point-in-time S&P 500 membership
+
+```python
+panel = q.load_feature("ret_1d").pivot(index="date", columns="ticker", values="value")
+in_index = q.membership.mask_like(panel, "sp500", by="ticker")  # True where a member
+in_index.loc["2020-06-15", "AAPL"]                              # True
+q.membership.members_on("sp500", "2020-06-15", by="ticker")     # ~500 tickers
+```
+
+`by="ticker"` keys columns on upstream's ticker symbol for each membership interval
+(renames like FB → META are *not* linked); `by="security_id"` (the default) keys on
+provisional `<ticker>-<YYYYMMDD>` ids that will change when identity resolution lands —
+don't persist them. Tables and refresh tool live in `data_universe/membership/tables/sp500`;
+see `MAINTENANCE.md` item 2.
 
 ## Frame conventions
 
 - **Bar frames** (`sources/base.py`): tz-aware `America/New_York` `DatetimeIndex` named
   `timestamp`; columns `open, high, low, close, volume, vwap`, all `float64`. Daily bars are
-  stamped at midnight of the session date; intraday bars are filtered to regular trading
-  hours (9:30-16:00 ET) unless the caller opts out.
+  stamped at midnight of the session date; intraday bars are stamped at the **start** of
+  their window and filtered to regular trading hours by window overlap — a bar survives iff
+  `[stamp, stamp + bar_minutes)` intersects 9:30-16:00 ET, so `hourly_bars` keeps stamps
+  09:00–15:00 (the 09:00 bar includes 9:00–9:30 pre-market trades — accepted convention;
+  see `OPEN_QUESTIONS.md` item 19).
 - **Feature/label series**: tz-naive `DatetimeIndex` named `date`, one value per session.
 - Prices are split- and dividend-adjusted by default; a function whose name doesn't say
   "raw" or "unadjusted" is always adjusted.
@@ -149,6 +182,8 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `DATA_UNIVERSE_CACHE_SIZE` | Default `Cache` capacity (entry count) |
 | `DATA_UNIVERSE_CACHE_DISK_DIR` | Directory for the disk-backed cache tier. Unset keeps the cache in-memory only (default) |
 | `DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT` | Byte size limit for the disk tier. Unset uses `diskcache`'s own default |
+| `DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS` | Days past `verified_through` before membership grids/status warn (default 45; `strict=True` raises) |
+| `DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR` | Directory to read membership tables from instead of the packaged `data_universe/membership/tables` (default unset) |
 
 Copy `config/config.example.yaml` to `config/config.yaml` (gitignored) and fill in real
 values, or call `q.config.load_yaml("config/config.yaml")` explicitly. An environment

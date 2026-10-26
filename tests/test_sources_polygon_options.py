@@ -1,6 +1,8 @@
 from unittest.mock import Mock
 
+import pandas as pd
 import pytest
+import requests
 
 from data_universe import config
 from data_universe.cache import reset_cache
@@ -26,7 +28,8 @@ class FakeResponse:
         return self._json_data
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
 
 
 def _contract(ticker, expiration_date, strike_price, contract_type):
@@ -98,12 +101,34 @@ def test_daily_close_parses_close_and_volume():
     assert result == {"close": 5.5, "volume": 120.0}
 
 
-def test_daily_close_defaults_missing_fields_to_zero():
+def test_daily_close_missing_close_is_nan_missing_volume_is_zero():
     session = Mock()
     session.get.return_value = FakeResponse({})
     source = PolygonOptionsSource(session=session)
     result = source.daily_close("O:AAPL240621C00190000", "2024-06-20")
-    assert result == {"close": 0.0, "volume": 0.0}
+    assert pd.isna(result["close"])
+    assert result["volume"] == 0.0
+
+
+def test_daily_close_404_not_found_is_nan_close_zero_volume():
+    # Untraded contract/date: the endpoint answers HTTP 404 NOT_FOUND, which
+    # must surface as a stale close, not an exception that kills the caller.
+    session = Mock()
+    session.get.return_value = FakeResponse(
+        {"status": "NOT_FOUND", "message": "Data not found."}, status_code=404
+    )
+    source = PolygonOptionsSource(session=session)
+    result = source.daily_close("O:AAPL240621C00190000", "2024-06-20")
+    assert pd.isna(result["close"])
+    assert result["volume"] == 0.0
+
+
+def test_daily_close_reraises_non_404_http_errors():
+    session = Mock()
+    session.get.return_value = FakeResponse({}, status_code=500)
+    source = PolygonOptionsSource(session=session)
+    with pytest.raises(requests.HTTPError):
+        source.daily_close("O:AAPL240621C00190000", "2024-06-20")
 
 
 def test_repeat_call_is_served_from_cache():

@@ -9,6 +9,7 @@ flag in `OPEN_QUESTIONS.md` on options endpoints.
 from __future__ import annotations
 
 import pandas as pd
+import requests
 
 from data_universe import config
 from data_universe.cache import cached
@@ -74,8 +75,26 @@ class PolygonOptionsSource(PolygonSource):
             `volume == 0` means a stale close (no trades that day) -- see
             `OPEN_QUESTIONS.md` and the PEAD event table's `is_stale` column
             (Phase 6), which is computed from this, not here.
+
+            The endpoint answers HTTP 404 `{"status": "NOT_FOUND"}` when it
+            has no data for the contract/date (e.g. an untraded contract);
+            that case returns `{"close": NaN, "volume": 0.0}` so callers see
+            a stale close rather than an exception. A 200 response missing
+            `close` likewise yields NaN; a missing `volume` yields 0.0.
+
+        Raises:
+            requests.HTTPError: For non-404 HTTP errors.
         """
         base = config.get_polygon_base_url()
         url = f"{base}/v1/open-close/{option_ticker}/{date}"
-        data = self._get(url, params={"adjusted": "true"})
-        return {"close": float(data.get("close", 0.0)), "volume": float(data.get("volume", 0.0))}
+        try:
+            data = self._get(url, params={"adjusted": "true"})
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return {"close": float("nan"), "volume": 0.0}
+            raise
+        close = data.get("close")
+        return {
+            "close": float(close) if close is not None else float("nan"),
+            "volume": float(data.get("volume") or 0.0),
+        }

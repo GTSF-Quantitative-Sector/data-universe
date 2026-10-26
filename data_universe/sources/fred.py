@@ -13,6 +13,11 @@ means 5.25%). This converts to a decimal *daily* rate via
 the right divisor, and whether a bank-discount-rate series like `DTB3`
 should be converted to a bond-equivalent yield first, are both flagged in
 `OPEN_QUESTIONS.md` -- this is a stated assumption, not a verified one.
+
+Because the key travels in the URL, `requests` errors (which embed the full
+URL in their message) would leak it into logs and tracebacks. `daily_rate`
+therefore re-raises transport/HTTP failures as `DataSourceError` naming the
+series and HTTP status -- never the URL -- with no exception chaining.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import requests
 
 from data_universe import config
 from data_universe.cache import cached
+from data_universe.sources.base import DataSourceError
 
 
 class FredSource:
@@ -70,8 +76,23 @@ class FredSource:
         if end:
             params["observation_end"] = end
         url = f"{self._base_url}/series/observations"
-        response = self._session.get(url, params=params, timeout=30)
-        response.raise_for_status()
+        detail = None
+        try:
+            response = self._session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            # exc's message (and any exception we re-raised it as, if we did
+            # so inside this except block via __cause__/__context__) embeds
+            # the request URL -- which carries the api_key.
+            detail = (
+                f"HTTP {exc.response.status_code}"
+                if getattr(exc, "response", None) is not None
+                else type(exc).__name__
+            )
+        if detail is not None:
+            raise DataSourceError(
+                f"FRED request for series {series_id!r} failed: {detail}"
+            )
         data = response.json()
         dates = []
         values = []

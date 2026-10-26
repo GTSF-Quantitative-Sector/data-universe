@@ -99,22 +99,26 @@ def test_daily_bars_is_a_single_range_request_not_one_per_day():
 
 
 def test_hourly_bars_filters_to_regular_hours():
-    pre_open = int(pd.Timestamp("2024-01-02 09:00:00", tz="America/New_York").timestamp() * 1000)
-    in_hours = int(pd.Timestamp("2024-01-02 10:00:00", tz="America/New_York").timestamp() * 1000)
+    def _stamp(hhmm):
+        return int(pd.Timestamp(f"2024-01-02 {hhmm}", tz="America/New_York").timestamp() * 1000)
+
     session = Mock()
     session.get.return_value = FakeResponse(
         200,
         {
             "results": [
-                _day_agg(pre_open, 1, 1, 1, 1, 1, 1),
-                _day_agg(in_hours, 2, 2, 2, 2, 2, 2),
+                _day_agg(_stamp("08:00:00"), 1, 1, 1, 1, 1, 1),
+                _day_agg(_stamp("09:00:00"), 2, 2, 2, 2, 2, 2),
+                _day_agg(_stamp("15:00:00"), 3, 3, 3, 3, 3, 3),
+                _day_agg(_stamp("16:00:00"), 4, 4, 4, 4, 4, 4),
             ]
         },
     )
     source = PolygonSource(session=session)
     bars = source.hourly_bars("AAPL", "2024-01-02", "2024-01-02")
-    assert len(bars) == 1
-    assert bars.iloc[0]["close"] == 2.0
+    # Start-stamped overlap: 08:00 fully pre-open and 16:00 fully after-hours
+    # are dropped; 09:00 (holds 9:30-10:00) and 15:00 (holds 15:00-16:00) kept.
+    assert bars["close"].tolist() == [2.0, 3.0]
 
 
 def test_index_daily_bars_for_vix():

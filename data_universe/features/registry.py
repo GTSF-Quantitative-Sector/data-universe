@@ -111,10 +111,14 @@ def compute(
         session_index = calendar.sessions(
             source, calendar_start.strftime("%Y-%m-%d"), end, proxy_ticker=calendar_proxy
         )
-        shifted = calendar.shift_sessions(
-            session_index, pd.Timestamp(start), -spec.warmup_trading_days
-        )
-        if shifted is not None:
-            padded_start = shifted.strftime("%Y-%m-%d")
+        # `start` may be a weekend/holiday, which shift_sessions can't locate --
+        # anchor on the first session on/after it instead.
+        position = session_index.searchsorted(pd.Timestamp(start), side="left")
+        if position < len(session_index):
+            shifted = calendar.shift_sessions(
+                session_index, session_index[position], -spec.warmup_trading_days
+            )
+            if shifted is not None:
+                padded_start = shifted.strftime("%Y-%m-%d")
     result = spec.fn(ticker, padded_start, end, source, **kwargs)
     return result.loc[(result.index >= pd.Timestamp(start)) & (result.index <= pd.Timestamp(end))]

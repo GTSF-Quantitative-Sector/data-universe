@@ -19,3 +19,9 @@ cache_size: 256
 # to keep the cache in-memory only (default).
 cache_disk_dir: ""
 cache_disk_size_limit_bytes: ""
+# Days past the membership manifest's verified_through before grid/status warn
+# (and membership_grid(strict=True) raises). Default 45.
+membership_max_staleness_days: 45
+# Directory to read membership tables from instead of the packaged
+# data_universe/membership/tables. Leave empty to use the packaged tables (default).
+membership_tables_dir: ""

@@ -1,10 +1,13 @@
+import traceback
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+import requests
 
 from data_universe import config
 from data_universe.cache import reset_cache
+from data_universe.sources.base import DataSourceError
 from data_universe.sources.fred import FredSource
 
 
@@ -94,3 +97,44 @@ def test_repeat_call_is_served_from_cache():
     source.daily_rate()
     source.daily_rate()
     assert session.get.call_count == 1
+
+
+def test_daily_rate_http_error_never_leaks_the_api_key():
+    # requests' HTTPError message embeds the full request URL, which carries
+    # api_key -- it must not survive into the raised error or its chain.
+    session = Mock()
+    response = Mock()
+    response.status_code = 403
+    response.raise_for_status.side_effect = requests.HTTPError(
+        "403 Client Error: Forbidden for url: "
+        "https://api.stlouisfed.org/fred/series/observations?api_key=test-fred-key",
+        response=response,
+    )
+    session.get.return_value = response
+    source = FredSource(session=session)
+    with pytest.raises(DataSourceError) as excinfo:
+        source.daily_rate()
+    exc = excinfo.value
+    assert "403" in str(exc)
+    assert "DTB3" in str(exc)
+    assert "test-fred-key" not in str(exc)
+    assert exc.__context__ is None
+    formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert "test-fred-key" not in formatted
+
+
+def test_daily_rate_connection_error_never_leaks_the_api_key():
+    session = Mock()
+    session.get.side_effect = requests.ConnectionError(
+        "Failed to resolve host for url: "
+        "https://api.stlouisfed.org/fred/series/observations?api_key=test-fred-key"
+    )
+    source = FredSource(session=session)
+    with pytest.raises(DataSourceError) as excinfo:
+        source.daily_rate()
+    exc = excinfo.value
+    assert "ConnectionError" in str(exc)
+    assert "test-fred-key" not in str(exc)
+    assert exc.__context__ is None
+    formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert "test-fred-key" not in formatted

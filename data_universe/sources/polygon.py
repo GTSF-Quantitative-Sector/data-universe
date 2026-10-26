@@ -114,7 +114,7 @@ class PolygonSource(DataSource):
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """See `DataSource.hourly_bars`. Filtered to regular trading hours by default."""
         bars = self._aggs(ticker, start, end, "hour", normalize=False)
-        return filter_regular_hours(bars)
+        return filter_regular_hours(bars, bar_minutes=60)
 
     @cached("index_daily_bars")
     def index_daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
