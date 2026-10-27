@@ -2,9 +2,10 @@
 
 Every unverified assumption and known implementation gap in this repo, consolidated in one
 place. Numbers match `PLAN.md` §9 where that section already numbered an item, so
-cross-references from code docstrings stay stable. Items 11-23 are new gaps discovered
+cross-references from code docstrings stay stable. Items 11-25 are new gaps discovered
 during implementation, not present in `PLAN.md` §9. Items 4, 5, 10, 15, 20 and 22 are all
-answered by `python -m data_universe.probe` (v0.6.0) — one opt-in run with real keys.
+answered by `python -m data_universe.probe` (v0.6.0) — one opt-in run with real keys;
+item 24's endpoint choice is too.
 
 | # | Question | Why it matters | Current stance | Owner / next step |
 |---|---|---|---|---|
@@ -33,6 +34,8 @@ answered by `python -m data_universe.probe` (v0.6.0) — one opt-in run with rea
 | 21 | Where should total-return levels be anchored? | Only the requested range is fetched, so the anchor can't be "inception" — and the choice decides whether adjusted levels are comparable across calls. | **Decided 2026-10-27**: anchor at the window's last bar (it equals the split-adjusted price). Returns and other ratios are identical for any window; levels compare only within one call. Phase 3's store re-anchors at the store's last date, which changes nothing for ratio consumers. | None — documented in `sources/adjust.py` and `CONTRACTS.md`. Revisit only if a consumer needs cross-call levels (use `daily_bars_raw` instead). |
 | 22 | What does the vendor's `expired` flag on options contracts actually mean? | `contracts_as_of` used to send only `expired=true`, which misses contracts still listed today — a silent gap for recent events. | Query `expired=true` always, and union in `expired=false` whenever the expiry window can reach today, deduplicating by contract ticker. The exact flag semantics remain unverified. | The probe's `aapl_contracts_as_of_2019` check confirms the endpoint and `as_of` filtering; the union approach is the safe over-fetch until the flag's semantics are documented. Cross-referenced from `sources/polygon_options.py`. |
 | 23 | What are the exact paths for the Phase 7 datasets? | Benzinga earnings/estimates, short interest, short volume, Treasury yields and related companies are wanted (`docs/ROADMAP.md` Phase 7) but their Massive REST paths are unconfirmed — guessing them into the probe would report meaningless 404s. | Only long-documented paths are probed today (`/v2/reference/news` is the sole new-data check). Each future check must carry a `doc_url` confirming its path first. | Confirm each path in Massive's REST docs, then add checks to `probe.py` `run_newdata`. |
+| 24 | Which endpoint gives the as-of CIK for a renamed ticker — Massive ticker details `?date=` or ticker events? | `build_pead_panel` resolves CIKs through SEC's *current* ticker→CIK map (`cik_source="sec_current"`), so a reused ticker can get a different company's filings attached (e.g. DOW, T). Interval filtering limits this but doesn't eliminate it. | The `cik_resolver` hook on `build_pead_panel` is in place (v0.7.0) — `(ticker, as_of) -> (cik, label)` per interval — but no resolver is implemented yet. | Run `python -m data_universe.probe`: the `fb_as_of_cik_is_meta` finding (ticker details `?date=`) and the `meta_ticker_events` check pick the endpoint, then implement the resolver. |
+| 25 | How should early-close (half-day) sessions be handled in `announce_timing`? | `announce_timing` buckets by the regular 16:00 close, so a filing between a 13:00 early close and 16:00 is classed `market_hours` with `reaction_session` = that same day — even though that day's close preceded the news. | Rare and not handled: the regular-hours clock is used for every date. | Revisit if a project cares — would need an early-close calendar, which the SPY-bars session index doesn't encode. |
 
 See [`CONTRACTS.md`](CONTRACTS.md) for the schemas these assumptions feed into, and
 [`MAINTENANCE.md`](MAINTENANCE.md) for the recurring-task side of items 1, 12, and 13.

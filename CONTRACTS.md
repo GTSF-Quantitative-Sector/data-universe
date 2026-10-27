@@ -72,10 +72,12 @@ shared `compute()`.
 
 Source: `data_universe/events/earnings.py`'s `build_pead_events(ticker, edgar_source,
 price_source, options_source, cik=None, calendar_start="2015-01-01",
-calendar_end=None) -> pd.DataFrame`.
+calendar_end=None, cik_source=None) -> pd.DataFrame`.
 
 One row per qualifying 8-K Item 2.02 filing, sorted ascending by `event_date`. Columns,
-exactly, in this order:
+exactly, in this order — the 13 v1 columns are unchanged in name, order, values and
+skip rules; the v0.7.0 (v2) columns are appended after them and can never cause a row
+to be skipped — anything they can't compute is missing (NaN / NaT / None / `<NA>`):
 
 | Column | Meaning |
 |---|---|
@@ -91,22 +93,81 @@ exactly, in this order:
 | `next_earnings_session` | **Realized**, not forecast: the following row's `event_date`, filled in only after sorting. `NaT` for the most recent filing. Never use this as a model input for `day0` itself — it's hindsight. |
 | `call_volume` / `put_volume` | Contract volume traded on `day0` for the chosen ATM straddle's call/put leg. |
 | `is_stale` | `True` whenever either leg of the straddle traded zero volume on `day0` (a stale daily close) — including an untraded contract, which `PolygonOptionsSource.daily_close` reports as `{"close": NaN, "volume": 0.0}` rather than raising on its HTTP 404. |
+| `acceptance_time_et` | The 8-K's `acceptanceDateTime` as a tz-aware `America/New_York` Timestamp (tz-aware input is `tz_convert`ed; a naive value is localized as ET wall time). Note: the 8-K acceptance time is only a proxy for the actual announcement time. |
+| `announce_timing` | Clock-based bucket of `acceptance_time_et`: `"pre_open"` before 09:30, `"market_hours"` 09:30 up to (not including) 16:00, `"post_close"` 16:00 or later — including on weekend and holiday dates, which classify the same way. |
+| `pre_announcement_session` | The last session whose close precedes the news: `day0` itself for a post-close filing on a session day, else `pre_session`. |
+| `reaction_session` | The first session whose close reflects the news: `day1` for a post-close filing on a session day, else `day0`. Weekend/holiday filings therefore map to the surrounding sessions. |
+| `strike` / `expiry` | The day-0 straddle's strike and (tz-naive) expiry — the values v1 already computed, now exported. |
+| `call_ticker` / `put_ticker` | OCC tickers of the day-0 straddle's legs. |
+| `call_price` / `put_price` | Leg closes on `day0`; NaN when the contract didn't trade. |
+| `straddle_price` | `call_price + put_price`; NaN propagates. |
+| `spot_raw` | The raw day-0 close the ATM strike was chosen against (same value v1 uses as `spot`). |
+| `pre_strike` / `pre_expiry` / `pre_call_ticker` / `pre_put_ticker` / `pre_call_price` / `pre_put_price` / `pre_straddle_price` / `pre_spot_raw` | The same fields for a second straddle priced at the close of `pre_announcement_session` on the chain as of that day: same expiry rule as day0 (nearest expiry strictly after `day0`), strike band around `pre_spot_raw` (the raw close there). For a post-close filing on a session day these copy the day-0 values with no extra requests. All missing when `pre_spot_raw` is NaN or ≤ 0, or the chain/straddle can't be priced (the ValueError/KeyError cases v1 already skips on for day0). |
+| `pre_days_to_expiry` | Calendar days from `pre_announcement_session` to `pre_expiry`, as a float. |
+| `pre_call_volume` / `pre_put_volume` | Pre-leg volumes on `pre_announcement_session`. |
+| `pre_is_stale` | Nullable `boolean` — True when either pre leg traded zero volume, `<NA>` when there is no pre straddle. |
+| `implied_move` | `pre_straddle_price / pre_spot_raw`; NaN when either is missing. |
+| `ret_reaction` | Total-return close-to-close return from `pre_announcement_session` to `reaction_session`, from the same `daily_bars` window the event already fetched; NaN when either bar is missing. |
+| `surprise_ratio` | `abs(ret_reaction) / implied_move`, only when both are finite and `implied_move > 0`; else NaN. |
+| `cik` | The filing CIK used for this event, normalized to a digit string via `str(int(cik))`. |
+| `cik_source` | Where `cik` came from: `"explicit"` (a `cik=` argument or `cik_overrides` — a custom `cik_source=` label is recorded instead when given), `"sec_current"` (SEC's current ticker→CIK map via `edgar_source.get_cik`), or a `cik_resolver` label. Passing `cik_source` without `cik` raises `ValueError`. |
 
 The ATM straddle is chosen with `spot` = the **raw** day-0 close — historical option
 strikes are on the raw (as-traded) basis, so a split-adjusted spot would pick the wrong
 strike for any event preceding a later split. The chain query itself is filtered
 server-side: expirations in `(day0, day0 + 40]` days and strikes within ±20% of spot
 (`PolygonOptionsSource.contracts_as_of`'s `expiration_*`/`strike_*` params), with an
-`expired`+`active` union when the window can reach today.
+`expired`+`active` union when the window can reach today. The pre-announcement
+straddle runs the same selection through one shared helper, just priced and
+chain-fetched at `pre_announcement_session` with its strike band around
+`pre_spot_raw`.
 
 A filing too close to either edge of the available calendar/price history to compute (not
 enough trading-session lookback, no expiry found, no matching call/put in the chain, or a
 ticker bar missing on `day0`/`day1` in either the adjusted or the raw frame — e.g. a halt
 while the market stayed open) is
 **silently skipped** — it does not appear as a null row, and it does not raise.
+Those skip rules are unchanged from v1; the v2 columns only ever go missing,
+they never add a new reason to drop an event.
 
 Issue 3 from the original spec review ("weekly ranking lookahead") is out of scope: this
 table has no ranking column at all.
+
+### PEAD panel
+
+Source: `data_universe/events/earnings.py`'s `build_pead_panel(start, end=None,
+index_id="sp500", *, edgar_source=None, price_source=None, options_source=None,
+tickers=None, cik_overrides=None, cik_resolver=None, strict=False) -> PeadPanelReport`.
+
+- `end` defaults to today; `start > end` raises `ValueError`. `edgar_source` defaults
+  to `EdgarSource()`; whichever of `price_source`/`options_source` is omitted shares
+  one `MassiveOptionsSource()`.
+- **Membership rule**: an event is kept iff `start <= event_date <= end` AND the
+  ticker was an index member at the close of its `pre_announcement_session` under one
+  of the intervals in its resolved-CIK group — `start_date <=
+  pre_announcement_session < end_date_excl`, a NaN end meaning an open interval.
+  Intervals come from `membership.store.load_ticker_intervals(index_id)` — keyed by
+  ticker until Phase 4's identity resolution; an unknown `index_id` raises
+  `MembershipError`, and the manifest's staleness check (`strict=`) applies first.
+- **CIK resolution**, per candidate interval with `as_of` = `max(interval
+  start_date, last session before `start`)`: `cik_overrides[ticker]` (label
+  `"explicit"`) → `cik_resolver(ticker, as_of)` if given and non-None →
+  `edgar_source.get_cik(ticker)` (label `"sec_current"`). Each ticker's intervals
+  group by (normalized CIK, label); each group gets one `build_pead_events` call and
+  keeps its events only inside that group's own intervals.
+- `PeadPanelReport.events` has exactly `EVENT_COLUMNS`, sorted by (event_date,
+  ticker) — an empty frame with those columns when nothing qualifies. `succeeded`
+  maps ticker → events kept (0 when none); `failed` maps ticker →
+  `"ExcType: message"`. One ticker's failure is caught and recorded, never stopping
+  the panel; a `tickers=`-requested ticker with no candidate interval lands in
+  `failed`, non-fatally.
+- Request cost: each event still costs its own bars window — 3 cached requests
+  (split-adjusted bars + raw bars + dividends, the total-return composite's
+  primitives; the SPY proxy fetch is shared through the cache) — plus up to 2 chain
+  queries and 4 contract closes per event. Each candidate ticker's events are
+  computed over the whole `[start − 90 days, end]` calendar and only then filtered
+  to membership, so a ticker that was a member for only part of the range still
+  pays for its non-member events.
 
 ## Precompute parquet output
 

@@ -4,7 +4,7 @@ A prioritized plan for improving the data `data_universe` fetches, driven by the
 research (earnings announcements + options) and the GNN ranker (a large, point-in-time
 S&P 500 universe, 2015 to now). Phase 1 shipped as v0.6.0 — see
 `docs/design/2026-10-27-v0.6.0-data-correctness-and-hardening.md` for its design and
-behavior changes.
+behavior changes. Phase 2 shipped as v0.7.0.
 
 ## Phases
 
@@ -12,7 +12,7 @@ behavior changes.
 |---|---|---|---|---|
 | 0 | Merge v0.5.0 (`ethan` → `main`); consider merging Mark's `RESEARCH_CONTEXT.md` | all | S (user) | none |
 | **1** | **Correctness + hardening — shipped as v0.6.0** | PEAD, GNN | L | 0 |
-| 2 | PEAD event table v2 (additive columns) | PEAD | M | 1 + probe |
+| **2** | **PEAD event table v2 — shipped as v0.7.0** | PEAD | M | 1 (+ probe for the as-of CIK resolver) |
 | 3 | Durable raw store + bulk ingest + ingest validation | GNN, PEAD | XL | 1 + probe |
 | 4 | Identity resolution (`membership/identity.py`) | GNN, PEAD | L | 1 + probe (3 helps) |
 | 5 | Precompute v2 (panels, versioning, tombstones) | all | M | 3 |
@@ -28,25 +28,25 @@ expired/active union; `MassiveOptionsSource`; retries + `EntitlementError`; EDGA
 throttle/retries/User-Agent. **Gated:** don't merge to `main` until the probe confirms
 `dividend_cash_basis` (`OPEN_QUESTIONS.md` item 20).
 
-### Phase 2 — PEAD event table v2
+### Phase 2 — done (v0.7.0)
 
-Keep every existing column (including `day0` semantics) and append:
+Every v1 column kept (including `day0` semantics), with the v2 columns appended:
+`acceptance_time_et`/`announce_timing` (clock-based `pre_open`/`market_hours`/
+`post_close`), `pre_announcement_session`/`reaction_session` (weekend/holiday filings
+map to the surrounding sessions), the exported day-0 straddle (`strike`…`spot_raw`),
+the pre-announcement straddle (`pre_*`, same expiry rule — nearest expiry strictly
+after `day0`), `implied_move`, `ret_reaction`, `surprise_ratio`, and
+`cik`/`cik_source`. New columns can only go missing, never skip a row.
+`build_pead_panel(start, end, index_id="sp500")` adds point-in-time membership at the
+close of `pre_announcement_session` (ticker-keyed until Phase 4), per-ticker failure
+isolation, a `tickers` subset, `cik_overrides`, and the `cik_resolver` hook.
 
-- `acceptance_time_et` and `announce_timing` ∈ {`pre_open` (<09:30), `market_hours`,
-  `post_close` (≥16:00)}.
-- `pre_announcement_session` (last session whose close precedes the news) and
-  `reaction_session` (first session whose close reflects it); weekend/holiday filings
-  map to the surrounding sessions.
-- The day-0 straddle values currently computed and dropped: `strike`, `expiry`,
-  `call_ticker`, `put_ticker`, `call_price`, `put_price`, `straddle_price`, `spot_raw`.
-- A second straddle priced at `pre_announcement_session` (`pre_*` columns) and
-  `implied_move = pre_straddle_price / pre_spot_raw`.
-- `ret_reaction` (total-return close at `reaction_session` / `pre_announcement_session`
-  − 1) and `surprise_ratio = |ret_reaction| / implied_move`.
-- As-of CIK lookup for renamed/delisted tickers (Massive ticker details as of a date,
-  or ticker events — whichever the probe confirms), with a `cik_source` column.
-- `build_pead_panel(index_id="sp500", start, end)` with per-ticker failure isolation
-  and point-in-time membership (`by="ticker"` until Phase 4).
+**Not shipped:** the as-of CIK lookup itself — the `cik_resolver` hook is in place but
+unfilled until the probe's `fb_as_of_cik_is_meta`/ticker-events check confirms the
+endpoint (`OPEN_QUESTIONS.md` item 24); panel CIKs default to SEC's current map
+(`cik_source="sec_current"`). v0.7.0 stacks on v0.6.0 and inherits its merge gate —
+don't merge to `main` until the probe confirms `dividend_cash_basis`
+(`OPEN_QUESTIONS.md` item 20).
 
 ### Phase 3 — durable raw store + bulk ingest
 
@@ -110,11 +110,14 @@ states with checkpoints.
 
 1. Merge v0.5.0 to `main`.
 2. Run `python -m data_universe.probe` with real keys and share the JSON — it resolves
-   `OPEN_QUESTIONS.md` items 4, 5, 10, 15, 20 and 22 and scopes Phases 2–4 and 7.
+   `OPEN_QUESTIONS.md` items 4, 5, 10, 15, 20, 22 and 24 and scopes Phases 3–4 and 7,
+   plus Phase 2's `cik_resolver`.
    If `dividend_cash_basis` comes back `split_adjusted`, flip
    `adjust.DIVIDEND_CASH_BASIS` (the fakes follow automatically).
-3. **Don't merge v0.6.0 until the dividend basis is confirmed** — a wrong basis is a
-   silent error.
+3. **Don't merge v0.6.0 — or v0.7.0, which stacks on it — until the dividend basis is
+   confirmed** — a wrong basis is a silent error.
+4. Once the probe picks the as-of CIK endpoint, implement a `cik_resolver` for
+   `build_pead_panel` (`OPEN_QUESTIONS.md` item 24).
 
 ## Risks
 

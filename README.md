@@ -97,7 +97,13 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   `fwd_vrp_expost`, `fwd_ret_15d`.
 - **`events/earnings.py`** — `build_pead_events(...)`: one row per qualifying 8-K Item 2.02
   filing, combining `EdgarSource`, price bars, and the options chain into the PEAD event
-  table (schema in `CONTRACTS.md`).
+  table — v0.7.0 appends the v2 columns (ET acceptance time and announce timing,
+  pre-announcement/reaction sessions, the day-0 and pre-announcement straddles,
+  `implied_move`, `ret_reaction`, `surprise_ratio`, `cik`/`cik_source`) after the
+  unchanged v1 ones. `build_pead_panel(start, end, index_id="sp500", ...)` builds the
+  point-in-time, index-wide table with per-ticker failure isolation, a `tickers`
+  subset, `cik_overrides` and a pluggable `cik_resolver` hook (schema in
+  `CONTRACTS.md`).
 - **`membership/`** — point-in-time S&P 500 membership from vendored
   [fja05680/sp500](https://github.com/fja05680/sp500) tables: `sp500_intervals`,
   `membership_grid`, `mask_like`, `members_on`, `status`, keyed by
