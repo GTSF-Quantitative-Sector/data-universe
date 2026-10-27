@@ -13,21 +13,59 @@ arrays at the top level. Shape verified against live data.sec.gov on
 
 CIK lookup uses SEC's public ticker mapping
 (`https://www.sec.gov/files/company_tickers.json`), the same file
-`sec_parser` bundles a snapshot of.
+`sec_parser` bundles a snapshot of. It is downloaded once per process
+(`ticker_map`) and lists *current* tickers only -- a renamed or delisted
+ticker (e.g. FB) is not in it; pass `cik=` explicitly for those.
+
+Fair access: SEC allows at most 10 requests/second per client and requires a
+descriptive User-Agent with a contact. Every request from every `EdgarSource`
+in the process goes through one throttle spacing requests at least
+`_SEC_MIN_INTERVAL_SECONDS` apart (<= 9/s). Transient failures (429/5xx,
+connection errors, timeouts) are retried with backoff; a 403 -- SEC's answer
+to a placeholder User-Agent or a rate-limit violation -- is raised at once.
+The User-Agent is the constructor argument, else `config.get_user_agent()`
+(env `DATA_UNIVERSE_USER_AGENT`), else a placeholder that triggers a one-time
+warning.
 """
 from __future__ import annotations
 
+import threading
+import time
+import warnings
 from typing import Optional
 
 import pandas as pd
 import requests
 
+from data_universe import config
 from data_universe.cache import cached
+from data_universe.sources.base import DataSourceError
+from data_universe.sources.http import get_with_retries, url_path
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:0>10}.json"
 _SUBMISSIONS_FILES_URL = "https://data.sec.gov/submissions/{name}"
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _EARNINGS_COLUMNS = ["filing_date", "acceptance_datetime", "form", "items"]
+PLACEHOLDER_USER_AGENT = "data_universe (contact: gtsf-quant@example.org)"
+
+_SEC_MIN_INTERVAL_SECONDS = 0.11
+_throttle_lock = threading.Lock()
+_last_request_at: Optional[float] = None
+_warned_placeholder = False
+
+
+def _throttle() -> None:
+    """Block until at least `_SEC_MIN_INTERVAL_SECONDS` have passed since the previous
+    EDGAR request made anywhere in this process."""
+    global _last_request_at
+    with _throttle_lock:
+        now = time.monotonic()
+        if _last_request_at is not None:
+            wait = _last_request_at + _SEC_MIN_INTERVAL_SECONDS - now
+            if wait > 0:
+                time.sleep(wait)
+                now = time.monotonic()
+        _last_request_at = now
 
 
 def _item_202_rows(page: dict) -> list:
@@ -67,21 +105,76 @@ class EdgarSource:
             fresh pooled session.
         user_agent: SEC requires a descriptive User-Agent identifying the
             requester (e.g. "org-name contact@example.org"); requests without
-            one may be rejected.
+            one may be rejected. None uses `config.get_user_agent()`, then a
+            placeholder (with a one-time warning).
+        max_retries: Max retries of a transient failure before raising.
+        backoff_seconds: Base backoff in seconds, doubled on each retry.
     """
 
     def __init__(
         self,
         session: Optional[requests.Session] = None,
-        user_agent: str = "data_universe (contact: gtsf-quant@example.org)",
+        user_agent: Optional[str] = None,
+        max_retries: int = 5,
+        backoff_seconds: float = 1.0,
     ) -> None:
         self._session = session or requests.Session()
         self._user_agent = user_agent
+        self._max_retries = max_retries
+        self._backoff_seconds = backoff_seconds
+
+    def _resolved_user_agent(self) -> str:
+        global _warned_placeholder
+        user_agent = self._user_agent or config.get_user_agent()
+        if user_agent:
+            return user_agent
+        if not _warned_placeholder:
+            _warned_placeholder = True
+            warnings.warn(
+                "EdgarSource is using a placeholder User-Agent; SEC may block it. Set "
+                "DATA_UNIVERSE_USER_AGENT (or config.set_user_agent) to "
+                "'<org> <contact email>'.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return PLACEHOLDER_USER_AGENT
 
     def _get(self, url: str) -> dict:
-        response = self._session.get(url, headers={"User-Agent": self._user_agent}, timeout=30)
+        response = get_with_retries(
+            self._session,
+            url,
+            headers={"User-Agent": self._resolved_user_agent()},
+            timeout=30,
+            max_retries=self._max_retries,
+            backoff_seconds=self._backoff_seconds,
+            throttle=_throttle,
+        )
+        if response.status_code == 403:
+            raise DataSourceError(
+                f"SEC EDGAR returned 403 for {url_path(url)} -- usually a missing or "
+                "placeholder User-Agent, or more than 10 requests/second. Set "
+                "DATA_UNIVERSE_USER_AGENT to '<org> <contact email>'."
+            )
         response.raise_for_status()
         return response.json()
+
+    @cached("company_tickers")
+    def ticker_map(self) -> pd.Series:
+        """SEC's current ticker -> CIK mapping, downloaded once per process.
+
+        Returns:
+            A Series indexed by upper-case ticker, values CIK digit strings, named
+            "cik". On a duplicate ticker the first entry wins.
+        """
+        data = self._get(_TICKERS_URL)
+        tickers, ciks = [], []
+        for entry in data.values():
+            ticker = str(entry.get("ticker", "")).upper()
+            if ticker:
+                tickers.append(ticker)
+                ciks.append(str(entry["cik_str"]))
+        mapping = pd.Series(ciks, index=pd.Index(tickers, name="ticker"), name="cik", dtype=object)
+        return mapping[~mapping.index.duplicated(keep="first")]
 
     @cached("get_cik")
     def get_cik(self, ticker: str) -> str:
@@ -96,12 +189,14 @@ class EdgarSource:
         Raises:
             ValueError: If `ticker` isn't found in the mapping.
         """
-        data = self._get(_TICKERS_URL)
+        mapping = self.ticker_map()
         ticker_upper = ticker.upper()
-        for entry in data.values():
-            if str(entry.get("ticker", "")).upper() == ticker_upper:
-                return str(entry["cik_str"])
-        raise ValueError(f"Ticker {ticker!r} not found in SEC company_tickers.json")
+        if ticker_upper in mapping.index:
+            return str(mapping.loc[ticker_upper])
+        raise ValueError(
+            f"Ticker {ticker!r} not found in SEC company_tickers.json (current tickers "
+            "only -- pass cik= explicitly for a renamed or delisted ticker)"
+        )
 
     @cached("earnings_8k_filings")
     def earnings_8k_filings(self, cik: str) -> pd.DataFrame:

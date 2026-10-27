@@ -61,16 +61,22 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
 - **`calendar.py`** — trading-session helpers (`sessions`, `next_session`, `previous_session`,
   `shift_sessions`) derived from a market proxy's own daily bars, no separate holiday
   calendar.
-- **`sources/`** — `PolygonSource` (stock/index daily & hourly aggregates),
+- **`sources/`** — `PolygonSource` (stock/index daily & hourly aggregates + dividends),
   `PolygonOptionsSource` (options contract reference + per-contract daily closes),
   `FredSource` (risk-free rate, default series `DTB3`), `EdgarSource` (8-K Item 2.02
-  earnings-announcement dates + CIK lookup), `sec_adapter` (optional `sec_parser` wrapper for
-  `sp500(query_date=...)` and `fundamentals(ticker)`), and `fakes.FakePolygonSource` /
-  `fakes.FakeMarket` — a deterministic synthetic market with a planted beta/alpha, used by
-  the whole test suite and available to anyone without an API key.
+  earnings-announcement dates + CIK lookup, throttled to SEC's fair-access limit),
+  `sec_adapter` (optional `sec_parser` wrapper for `sp500(query_date=...)` and
+  `fundamentals(ticker)`), and `fakes.FakePolygonSource` / `fakes.FakeMarket` — a
+  deterministic synthetic market with dividends, splits and a planted beta/alpha, used
+  by the whole test suite and available to anyone without an API key.
+  `sources/adjust.py` holds the total-return math; `sources/http.py` the shared
+  retry/backoff helper.
 - **`sources/massive.py`** — `MassiveSource`, `PolygonSource` pointed at Massive (Polygon.io's
   new name, host `api.massive.com`): the same bars methods plus `list_tickers` and
-  `ticker_details` reference data. Reads `MASSIVE_API_KEY`, falling back to the Polygon key.
+  `ticker_details` reference data. `MassiveOptionsSource` adds the options methods on
+  the same host. Reads `MASSIVE_API_KEY`, falling back to the Polygon key.
+- **`probe.py`** — `python -m data_universe.probe`: an opt-in entitlement/response-shape
+  check against your real keys. See "Probe your plan" below.
 - **`sources/index_universe.py`** — collects the S&P 500, Dow 30, Nasdaq-100 and all
   Nasdaq-listed stocks, cross-checks them against Massive, and saves them to parquet. See
   "Index universes" below.
@@ -161,8 +167,13 @@ see `MAINTENANCE.md` item 2.
   09:00–15:00 (the 09:00 bar includes 9:00–9:30 pre-market trades — accepted convention;
   see `OPEN_QUESTIONS.md` item 19).
 - **Feature/label series**: tz-naive `DatetimeIndex` named `date`, one value per session.
-- Prices are split- and dividend-adjusted by default; a function whose name doesn't say
-  "raw" or "unadjusted" is always adjusted.
+- **Adjustment**: `daily_bars`/`hourly_bars` are total-return adjusted — splits *and*
+  cash dividends — built from split-adjusted bars, raw bars and the dividends endpoint
+  (`sources/adjust.py`; the vendor's `adjusted=true` is split-only). Adjusted levels are
+  anchored at each call's **last** bar, so only ratios (returns, vol, beta) compare
+  across calls — use `daily_bars_raw` wherever a real price level matters (option
+  strikes, price filters, dollar volume). Volume is split-adjusted share counts in
+  adjusted frames, raw share counts in raw frames.
 
 ## Configuration
 
@@ -172,7 +183,7 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 |---|---|
 | `POLYGON_API_KEY` | Polygon.io API key (sent as `Authorization: Bearer`, never in a URL) |
 | `POLYGON_BASE_URL` | Polygon REST base URL (default `https://api.polygon.io`) |
-| `POLYGON_FLATFILES_ENDPOINT` | S3-compatible flat-files endpoint (read by `config.py`; no consumer built yet — see "Not yet implemented") |
+| `POLYGON_FLATFILES_ENDPOINT` | S3-compatible flat-files endpoint (used by the probe's `flatfiles` group; `FlatFilesSource` itself is not built — see "Not yet implemented") |
 | `POLYGON_S3_ACCESS_KEY` | S3 access key for flat-files (same caveat) |
 | `POLYGON_S3_SECRET_KEY` | S3 secret key for flat-files (same caveat) |
 | `MASSIVE_API_KEY` | Massive API key (Bearer header). Falls back to `POLYGON_API_KEY` if unset |
@@ -184,10 +195,30 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT` | Byte size limit for the disk tier. Unset uses `diskcache`'s own default |
 | `DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS` | Days past `verified_through` before membership grids/status warn (default 45; `strict=True` raises) |
 | `DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR` | Directory to read membership tables from instead of the packaged `data_universe/membership/tables` (default unset) |
+| `DATA_UNIVERSE_USER_AGENT` | User-Agent sent to SEC EDGAR and Wikipedia, e.g. `"org-name contact@example.edu"`. SEC requires a real contact and may block the placeholder used when unset |
 
 Copy `config/config.example.yaml` to `config/config.yaml` (gitignored) and fill in real
 values, or call `q.config.load_yaml("config/config.yaml")` explicitly. An environment
 variable already set always wins over the YAML file.
+
+## Probe your plan
+
+Before relying on a dataset, check what your keys/plan actually include:
+
+```bash
+python -m data_universe.probe                          # every group, Massive host
+python -m data_universe.probe --only stocks options    # selected groups
+python -m data_universe.probe --host polygon --out /tmp/probe.json
+```
+
+This calls each endpoint the library uses (or plans to) once — bars at several
+timespans/depths, dividends, splits, options contracts and pricing, `I:VIX`, EDGAR,
+FRED, flat files — and writes a JSON report plus a printed table. Each check reports
+`ok`, `empty`, `not_entitled` (401/403), `not_found`, `rate_limited`, `error`, or a
+`skipped_*` reason, and derived findings answer questions like "is `adjusted=true`
+split-only?" and "are dividend cash amounts on the raw basis?" No keys are ever written
+or printed; with no keys every check reports `skipped_no_key`. Run it after any plan
+change or key rotation (`MAINTENANCE.md` item 8).
 
 ## Not yet implemented
 
@@ -195,8 +226,9 @@ variable already set always wins over the YAML file.
   Workaround: call `features.registry.compute()` / `labels.registry.compute()` directly, or
   use `precompute()`/`load_feature()`. See `OPEN_QUESTIONS.md` item 11.
 - **`FlatFilesSource`** (`data_universe/sources/flatfiles.py`) — not built; no S3 bulk
-  download or `download_options_day_aggs()` exists yet, despite the flat-files env vars
-  already being read by `config.py`. See `OPEN_QUESTIONS.md` item 12.
+  download or `download_options_day_aggs()` exists yet. The probe's `flatfiles` group
+  reads the flat-files env vars and checks whether your S3 credentials can list the
+  bucket. See `OPEN_QUESTIONS.md` item 12.
 
 ## Testing
 
@@ -213,6 +245,8 @@ The full suite runs against `sources/fakes.py`'s deterministic `FakeMarket`/
 ## See also
 
 - [`PLAN.md`](PLAN.md) — the original design spec this library implements.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — the phased plan for the data this library
+  fetches, and what each phase depends on.
 - [`CONTRACTS.md`](CONTRACTS.md) — frame/schema reference for downstream project teams.
 - [`MAINTENANCE.md`](MAINTENANCE.md) — recurring upkeep tasks, including the standing
   version-bump gap.

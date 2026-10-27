@@ -6,7 +6,8 @@ same `Authorization: Bearer <key>` auth -- but the host is now `api.massive.com`
 working. `MassiveSource` is therefore `PolygonSource` pointed at the Massive host, so it
 inherits `daily_bars`, `hourly_bars`, `index_daily_bars`, the 429 retry/backoff and the
 cache, and adds the two reference-data calls the universe collector needs:
-`list_tickers` and `ticker_details`.
+`list_tickers` and `ticker_details`. `MassiveOptionsSource` adds the options methods
+of `PolygonOptionsSource` on the same host.
 
 Key lookup: `config.get_massive_key()` first (env `MASSIVE_API_KEY`), then the Polygon key
 (env `POLYGON_API_KEY`). The key is only ever sent as a Bearer header, never in a URL.
@@ -22,6 +23,7 @@ import pandas as pd
 from data_universe import config
 from data_universe.cache import cached
 from data_universe.sources.polygon import PolygonSource
+from data_universe.sources.polygon_options import PolygonOptionsSource
 
 TICKER_COLUMNS = [
     "ticker",
@@ -128,3 +130,11 @@ class MassiveSource(PolygonSource):
         """
         data = self._get(f"{self._base_url()}/v3/reference/tickers/{ticker}")
         return data.get("results") or {}
+
+
+class MassiveOptionsSource(MassiveSource, PolygonOptionsSource):
+    """`PolygonOptionsSource`'s contract-reference and daily-close methods against the
+    Massive host and key (`MassiveSource._base_url`/`_headers`), plus everything
+    `MassiveSource` has. Method resolution order: MassiveOptionsSource, MassiveSource,
+    PolygonOptionsSource, PolygonSource.
+    """

@@ -53,6 +53,19 @@ def test_as_of_delegates_to_source_contracts_as_of():
     pd.testing.assert_frame_equal(result, _chain())
 
 
+def test_as_of_forwards_filters_only_when_given():
+    calls = []
+
+    class Recording:
+        def contracts_as_of(self, underlying, as_of_date, **filters):
+            calls.append(filters)
+            return _chain()
+
+    as_of(Recording(), "AAPL", "2024-01-02")
+    as_of(Recording(), "AAPL", "2024-01-02", strike_gte=150.0)
+    assert calls == [{}, {"strike_gte": 150.0}]
+
+
 def test_atm_strike_picks_closest_strike():
     assert atm_strike(_chain(), spot=191.0) == 190.0
     assert atm_strike(_chain(), spot=194.0) == 195.0

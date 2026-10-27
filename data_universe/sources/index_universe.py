@@ -221,15 +221,17 @@ class IndexUniverseSource:
         session: An injectable `requests.Session` (for tests). Defaults to a fresh
             pooled session.
         user_agent: Identifies this client to Wikimedia. Use a real contact address.
+            None uses `config.get_user_agent()` (env `DATA_UNIVERSE_USER_AGENT`),
+            then the placeholder default.
     """
 
     def __init__(
         self,
         session: Optional[requests.Session] = None,
-        user_agent: str = _DEFAULT_USER_AGENT,
+        user_agent: Optional[str] = None,
     ) -> None:
         self._session = session or requests.Session()
-        self._user_agent = user_agent
+        self._user_agent = user_agent or config.get_user_agent() or _DEFAULT_USER_AGENT
 
     def _fetch_html(self, url: str) -> str:
         response = self._session.get(url, headers={"User-Agent": self._user_agent}, timeout=30)

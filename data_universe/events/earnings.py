@@ -18,6 +18,14 @@ never silently resolved:
                              on day0 (a stale daily close).
 (Issue 3, weekly-ranking lookahead, is out of scope -- no ranking column
 exists in this table at all.)
+
+Price bases (v0.6.0): `sigma_pre_daily` uses total-return closes
+(`price_source.daily_bars`); everything that is a price *level* uses raw bars
+(`price_source.daily_bars_raw`) -- the ATM `spot` (historical option strikes
+are raw, so a split-adjusted spot picks the wrong strike for any event before
+a later split) and both `adv_usd_*` columns (real dollars traded). The option
+chain is fetched filtered to expiries in (day0, day0 + `_EXPIRY_SEARCH_DAYS`]
+and strikes within `_STRIKE_BAND` of spot, instead of the whole chain.
 """
 from __future__ import annotations
 
@@ -37,6 +45,12 @@ _EVENT_COLUMNS = [
     "call_volume", "put_volume", "is_stale",
 ]
 
+# Monthly expiries are at most 35 days apart, so this window always contains the
+# nearest listed expiry after day0.
+_EXPIRY_SEARCH_DAYS = 40
+# ATM strike search band, as a fraction of spot.
+_STRIKE_BAND = 0.20
+
 
 def build_pead_events(
     ticker: str,
@@ -53,7 +67,8 @@ def build_pead_events(
         ticker: Underlying ticker symbol.
         edgar_source: Object with `.get_cik(ticker)` and
             `.earnings_8k_filings(cik)` (see `sources/edgar.py`).
-        price_source: A `DataSource`-shaped object providing `.daily_bars`.
+        price_source: A `DataSource`-shaped object providing `.daily_bars` and
+            `.daily_bars_raw`.
         options_source: Object with `.contracts_as_of`/`.daily_close`
             (see `sources/polygon_options.py`; used via `options/chain.py`).
         cik: SEC CIK, or None to look it up via `edgar_source.get_cik`.
@@ -111,30 +126,39 @@ def _build_one_event(ticker, filing, session_index, price_source, options_source
     pre_window_start = calendar.shift_sessions(session_index, pre_session, -30)
     if pre_window_start is None:
         return None
-    bars = price_source.daily_bars(
-        ticker, pre_window_start.strftime("%Y-%m-%d"), day1.strftime("%Y-%m-%d")
-    )
+    window = (pre_window_start.strftime("%Y-%m-%d"), day1.strftime("%Y-%m-%d"))
+    bars = price_source.daily_bars(ticker, *window)
+    raw_bars = price_source.daily_bars_raw(ticker, *window)
     closes = bars["close"].copy()
     closes.index = bars.index.tz_localize(None).normalize()
+    raw_closes = raw_bars["close"].copy()
+    raw_closes.index = raw_bars.index.tz_localize(None).normalize()
 
     log_returns = core.log_returns(closes)
     sigma_pre_daily = log_returns.loc[log_returns.index <= pre_session].tail(30).std(ddof=1)
 
-    dollar_volume = bars["close"] * bars["volume"]
-    dollar_volume.index = closes.index
+    dollar_volume = raw_bars["close"] * raw_bars["volume"]
+    dollar_volume.index = raw_closes.index
     adv_usd_pre20 = dollar_volume.loc[dollar_volume.index <= pre_session].tail(20).mean()
-    if day0 not in closes.index or day1 not in closes.index:
+    if any(d not in index for d in (day0, day1) for index in (closes.index, raw_closes.index)):
         return None  # halt/no bar on day0 or day1 -- skip just this event
     adv_usd_day0_day1 = dollar_volume.loc[[day0, day1]].mean()
 
+    day0_str = day0.strftime("%Y-%m-%d")
+    spot = float(raw_closes.loc[day0])
     try:
-        option_chain = chain.as_of(options_source, ticker, day0.strftime("%Y-%m-%d"))
-        expiry = chain.nearest_expiry_after(option_chain, day0.strftime("%Y-%m-%d"))
-        spot = closes.loc[day0]
-        strike = chain.atm_strike(option_chain, spot)
-        straddle = chain.straddle(
-            options_source, option_chain, strike, expiry, day0.strftime("%Y-%m-%d")
+        option_chain = chain.as_of(
+            options_source,
+            ticker,
+            day0_str,
+            expiration_gte=(day0 + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            expiration_lte=(day0 + pd.Timedelta(days=_EXPIRY_SEARCH_DAYS)).strftime("%Y-%m-%d"),
+            strike_gte=spot * (1.0 - _STRIKE_BAND),
+            strike_lte=spot * (1.0 + _STRIKE_BAND),
         )
+        expiry = chain.nearest_expiry_after(option_chain, day0_str)
+        strike = chain.atm_strike(option_chain, spot)
+        straddle = chain.straddle(options_source, option_chain, strike, expiry, day0_str)
     except (ValueError, KeyError):
         return None
 

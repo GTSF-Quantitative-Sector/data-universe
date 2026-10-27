@@ -25,3 +25,6 @@ membership_max_staleness_days: 45
 # Directory to read membership tables from instead of the packaged
 # data_universe/membership/tables. Leave empty to use the packaged tables (default).
 membership_tables_dir: ""
+# User-Agent sent to SEC EDGAR and Wikipedia: "<org> <contact email>". SEC requires a real
+# contact and may block the placeholder used when this is empty.
+user_agent: ""

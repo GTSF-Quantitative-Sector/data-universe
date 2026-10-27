@@ -7,8 +7,14 @@ their window (the vendor convention), and are filtered to regular trading
 hours by window overlap -- a bar survives iff any part of its
 `[stamp, stamp + bar_minutes)` window intersects 09:30-16:00 ET. For hourly
 bars that keeps the 09:00-15:00 stamps; the 09:00 bar includes 9:00-9:30
-pre-market trades, which is accepted (see `filter_regular_hours`). Prices
-are split- and dividend-adjusted unless a function name says otherwise.
+pre-market trades, which is accepted (see `filter_regular_hours`).
+
+Adjustment: `daily_bars`/`hourly_bars` are total-return adjusted -- splits plus
+cash dividends (`sources/adjust.py`). Adjusted levels are anchored at the
+window's last bar, so only ratios (returns, vol, beta) are comparable across
+calls; `daily_bars_raw` gives real, unadjusted price levels (needed for option
+strikes, price filters and dollar volume). Volume is split-adjusted share
+counts in adjusted frames and raw share counts in raw frames.
 """
 from __future__ import annotations
 
@@ -28,6 +34,11 @@ class DataSourceError(Exception):
 
 class RateLimitedError(DataSourceError):
     """Raised when an upstream API returns 429 after exhausting retries."""
+
+
+class EntitlementError(DataSourceError):
+    """Raised on a vendor's HTTP 401/403: the API key is missing or invalid, or the plan
+    doesn't include the requested dataset. Distinct from an empty result."""
 
 
 def empty_bars() -> pd.DataFrame:
@@ -70,7 +81,8 @@ class DataSource(abc.ABC):
 
     @abc.abstractmethod
     def daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """Return daily adjusted OHLCV bars for `ticker` between `start` and `end` (inclusive).
+        """Return daily total-return (split + cash dividend) adjusted OHLCV bars for
+        `ticker` between `start` and `end` (inclusive), anchored at the last bar.
 
         Args:
             ticker: Underlying ticker symbol.
@@ -83,9 +95,9 @@ class DataSource(abc.ABC):
 
     @abc.abstractmethod
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """Return hourly adjusted OHLCV bars for `ticker` between `start` and `end` (inclusive),
-        filtered to regular trading hours by `filter_regular_hours` (start-stamped
-        window-overlap convention -- see that function's docstring).
+        """Return hourly total-return adjusted OHLCV bars for `ticker` between `start` and
+        `end` (inclusive), filtered to regular trading hours by `filter_regular_hours`
+        (start-stamped window-overlap convention -- see that function's docstring).
 
         Args:
             ticker: Underlying ticker symbol.
@@ -95,3 +107,27 @@ class DataSource(abc.ABC):
         Returns:
             A bars frame following the module-level frame convention.
         """
+
+    def daily_bars_raw(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Return daily **unadjusted** OHLCV bars -- the prices and share volume actually
+        traded on each date. Needed wherever a real price level matters: option strike
+        selection, price filters, dollar volume.
+
+        Not abstract, so existing custom sources keep working; a source that doesn't
+        override it raises `NotImplementedError` when a raw-price feature asks for it.
+
+        Args:
+            ticker: Underlying ticker symbol.
+            start: Start date, "YYYY-MM-DD".
+            end: End date, "YYYY-MM-DD".
+
+        Returns:
+            A bars frame following the module-level frame convention.
+
+        Raises:
+            NotImplementedError: If the source doesn't provide raw bars.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide raw (unadjusted) daily bars; "
+            "dollar-volume features and the PEAD event table need daily_bars_raw()"
+        )

@@ -10,7 +10,7 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: current version is `"0.5.0"`.** The rule lapsed twice: 40 commits across 7
+**Status: current version is `"0.6.0"`.** The rule lapsed twice: 40 commits across 7
 implementation phases shipped before the first bump to `"0.2.0"`, and 0.4.0's disk-cache
 work then shipped without a bump being recorded here either. Follow the rule from here
 on — bump both on every merged change, not just when someone notices the drift.
@@ -91,6 +91,15 @@ being served as valid hits. The same risk applies to any cached range that inclu
 an in-progress session cached mid-day can be served back as a stale partial day after the
 session closes.
 
+v0.6.0 note: the total-return `daily_bars`/`hourly_bars` composites are deliberately
+**not** cached -- they're cheap transforms of the cached primitives
+(`daily_bars` namespace → `daily_bars_split_adjusted`, plus `daily_bars_raw`,
+`dividends`, `hourly_bars` → `hourly_bars_split_adjusted`), and entries written under
+v0.5.0 remain valid hits because those namespaces hold the same series they always did.
+The disk cache therefore needs no clearing for the upgrade itself -- but anything
+*precomputed* from returns, volatility or beta under v0.5.0 is split-only and should be
+recomputed.
+
 ## 7. Index membership tables
 
 `sources/index_universe.py` scrapes current S&P 500, Dow and Nasdaq-100 membership from
@@ -98,6 +107,18 @@ Wikipedia. If a run raises `UniverseParseError`, open the page named in the mess
 compare it with the accepted header names (`_TICKER_HEADERS`, `_NAME_HEADERS`,
 `_SECTOR_HEADERS`) and the row-count ranges (`_EXPECTED_ROWS`) in that module; Wikipedia has
 already renamed columns once. Re-run the collector after each S&P 500 or Nasdaq-100
-reconstitution if you rely on saved parquet files, since those are dated snapshots, and put a
-real contact address in the User-Agent default (`_DEFAULT_USER_AGENT`) before running it on a
-schedule.
+reconstitution if you rely on saved parquet files, since those are dated snapshots. Its
+User-Agent comes from `DATA_UNIVERSE_USER_AGENT`/`config.set_user_agent` (same setting as
+EDGAR) when set, else `_DEFAULT_USER_AGENT` -- put a real contact address in one of those
+before running it on a schedule.
+
+## 8. Re-probe after plan or key changes
+
+`python -m data_universe.probe` records which upstream datasets the configured keys can
+actually reach (status per endpoint, plus findings like `dividend_cash_basis` and
+`options_strikes_are_raw`). Re-run it whenever the Polygon/Massive subscription changes,
+a key is rotated, or a source starts raising `EntitlementError` -- the report answers
+"is this a dead endpoint or a plan that doesn't include the dataset." Keep the JSON it
+writes (`<data_dir>/probe/probe_*.json`) next to the repo's other provenance; it contains
+no secrets. v0.6.0's merge to `main` is gated on one confirmed run -- see
+`docs/ROADMAP.md`.

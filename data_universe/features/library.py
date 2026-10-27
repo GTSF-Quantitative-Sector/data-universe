@@ -22,6 +22,16 @@ def _daily_frame(ticker: str, start: str, end: str, source) -> pd.DataFrame:
     return frame
 
 
+def _daily_raw_frame(ticker: str, start: str, end: str, source) -> pd.DataFrame:
+    """Unadjusted daily bars for `ticker` (real traded prices and share volume),
+    re-indexed to a tz-naive date index. Used wherever a price *level* matters."""
+    bars = source.daily_bars_raw(ticker, start, end)
+    frame = bars.copy()
+    frame.index = bars.index.tz_localize(None).normalize()
+    frame.index.name = "date"
+    return frame
+
+
 def _daily_rf(rate_source, index: pd.DatetimeIndex, start: str, end: str) -> pd.Series:
     """Daily risk-free rate aligned onto `index`, forward-filling the last
     known rate so sessions FRED doesn't publish on (bond holidays when stocks
@@ -104,9 +114,14 @@ def rv_gk_21d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     ).rename("rv_gk_21d")
 
 
-@register("dollar_volume_1d", warmup_trading_days=0, project="pead", description="close * volume")
+@register(
+    "dollar_volume_1d",
+    warmup_trading_days=0,
+    project="pead",
+    description="raw close * raw volume (dollars actually traded)",
+)
 def dollar_volume_1d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
-    frame = _daily_frame(ticker, start, end, source)
+    frame = _daily_raw_frame(ticker, start, end, source)
     return (frame["close"] * frame["volume"]).rename("dollar_volume_1d")
 
 

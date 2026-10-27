@@ -8,52 +8,80 @@ flag in `OPEN_QUESTIONS.md` on options endpoints.
 """
 from __future__ import annotations
 
+import datetime as dt
+from typing import Optional
+
 import pandas as pd
 import requests
 
-from data_universe import config
 from data_universe.cache import cached
 from data_universe.sources.polygon import PolygonSource
 
 _CONTRACT_COLUMNS = ["ticker", "expiration_date", "strike_price", "contract_type"]
 
 
+def _today() -> str:
+    """Today's UTC date, "YYYY-MM-DD" (a function so tests can pin it)."""
+    return dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+
 class PolygonOptionsSource(PolygonSource):
     """Options contract reference and per-contract daily aggregates from Polygon.io.
 
-    Constructor and auth/backoff/pagination are inherited from `PolygonSource`.
+    Constructor and auth/backoff/pagination are inherited from `PolygonSource`,
+    including `_base_url()` -- see `massive.MassiveOptionsSource` for the Massive host.
     """
 
     @cached("contracts_as_of")
-    def contracts_as_of(self, underlying: str, as_of_date: str) -> pd.DataFrame:
-        """The listed option chain for `underlying` as of `as_of_date`,
-        including contracts that have since expired.
+    def contracts_as_of(
+        self,
+        underlying: str,
+        as_of_date: str,
+        expiration_gte: Optional[str] = None,
+        expiration_lte: Optional[str] = None,
+        strike_gte: Optional[float] = None,
+        strike_lte: Optional[float] = None,
+        contract_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """The listed option chain for `underlying` as of `as_of_date`, optionally
+        narrowed server-side by expiry/strike/type (a full chain for a liquid name is
+        many pages; a filtered one is usually one).
+
+        Contracts that have since expired need `expired=true`, which excludes
+        contracts still listed today; so when the expiry window can reach today
+        (`expiration_lte` is None or >= today), a second `expired=false` query is
+        made and the two are unioned. See `OPEN_QUESTIONS.md` item 22.
 
         Args:
             underlying: Underlying ticker symbol.
             as_of_date: Date "YYYY-MM-DD".
+            expiration_gte: Earliest expiration, "YYYY-MM-DD", inclusive.
+            expiration_lte: Latest expiration, "YYYY-MM-DD", inclusive.
+            strike_gte: Lowest strike, inclusive.
+            strike_lte: Highest strike, inclusive.
+            contract_type: "call" or "put".
 
         Returns:
             A DataFrame with columns `ticker` (OCC), `expiration_date`,
-            `strike_price`, `contract_type` ("call"/"put"), one row per contract.
+            `strike_price`, `contract_type` ("call"/"put"), one row per contract,
+            sorted by expiration, strike, type and ticker.
         """
-        base = config.get_polygon_base_url()
-        url = f"{base}/v3/reference/options/contracts"
-        params = {
-            "underlying_ticker": underlying,
-            "as_of": as_of_date,
-            "expired": "true",
-            "limit": 1000,
+        url = f"{self._base_url()}/v3/reference/options/contracts"
+        params = {"underlying_ticker": underlying, "as_of": as_of_date, "limit": 1000}
+        filters = {
+            "expiration_date.gte": expiration_gte,
+            "expiration_date.lte": expiration_lte,
+            "strike_price.gte": strike_gte,
+            "strike_price.lte": strike_lte,
+            "contract_type": contract_type,
         }
-        rows: list = []
-        while url:
-            data = self._get(url, params=params)
-            rows.extend(data.get("results") or [])
-            url = data.get("next_url")
-            params = None  # next_url already carries its own query string
+        params.update({k: v for k, v in filters.items() if v is not None})
+        rows = self._paginate(url, {**params, "expired": "true"})
+        if expiration_lte is None or expiration_lte >= _today():
+            rows += self._paginate(url, {**params, "expired": "false"})
         if not rows:
             return pd.DataFrame(columns=_CONTRACT_COLUMNS)
-        return pd.DataFrame(
+        frame = pd.DataFrame(
             {
                 "ticker": [r["ticker"] for r in rows],
                 "expiration_date": [r["expiration_date"] for r in rows],
@@ -61,6 +89,9 @@ class PolygonOptionsSource(PolygonSource):
                 "contract_type": [r["contract_type"] for r in rows],
             }
         )
+        frame = frame.drop_duplicates("ticker")
+        frame = frame.sort_values(["expiration_date", "strike_price", "contract_type", "ticker"])
+        return frame.reset_index(drop=True)
 
     @cached("daily_close")
     def daily_close(self, option_ticker: str, date: str) -> dict:
@@ -85,8 +116,7 @@ class PolygonOptionsSource(PolygonSource):
         Raises:
             requests.HTTPError: For non-404 HTTP errors.
         """
-        base = config.get_polygon_base_url()
-        url = f"{base}/v1/open-close/{option_ticker}/{date}"
+        url = f"{self._base_url()}/v1/open-close/{option_ticker}/{date}"
         try:
             data = self._get(url, params={"adjusted": "true"})
         except requests.HTTPError as exc:

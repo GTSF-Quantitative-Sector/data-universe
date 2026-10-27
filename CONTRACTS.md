@@ -18,8 +18,28 @@ Source: `data_universe/sources/base.py`.
   `filter_regular_hours` keeps a bar iff `[stamp, stamp + bar_minutes)` intersects
   9:30-16:00 ET. `hourly_bars` therefore returns stamps 09:00–15:00 — and the 09:00 bar
   includes 9:00-9:30 pre-market trades (an accepted convention, not a bug).
-- Prices are split- and dividend-adjusted unless a function's name says "raw" or
-  "unadjusted".
+- **Three bar flavors per window** (`PolygonSource`/`MassiveSource`; see
+  `sources/adjust.py`):
+  - `daily_bars` / `hourly_bars` — **total-return** adjusted: splits *and* cash
+    dividends. `f_e = 1 − D_e / C(prev)` per ex-date, applied backward so the last bar
+    equals the split-adjusted price. Adjusted levels are therefore anchored at the
+    window's last bar and depend on the requested range — compare levels only within
+    one call; returns and other ratios are window-independent. Spin-offs and stock
+    dividends are not adjusted.
+  - `daily_bars_split_adjusted` / `hourly_bars_split_adjusted` — splits only (the
+    vendor's `adjusted=true`), the v0.5.0 series.
+  - `daily_bars_raw` — unadjusted prices and share volume as actually traded. Use this
+    wherever a real price level matters: option strikes, price filters, dollar volume.
+    A source that doesn't implement it raises `NotImplementedError` when asked.
+- Volume is split-adjusted share counts in adjusted frames and raw share counts in raw
+  frames (raw volume is *higher* before a split).
+- `dividends(ticker, start, end)` returns a frame with columns
+  `ex_dividend_date` (tz-naive), `cash_amount` (float), `currency`, `dividend_type`,
+  one row per dividend record with an ex-date in `[start, end]`, sorted by ex-date.
+- HTTP 401/403 from a vendor raises `EntitlementError` (a `DataSourceError`): bad key
+  or a dataset the plan doesn't include — distinct from an empty frame. Transient
+  failures (429/5xx/connection/timeout) are retried with doubling backoff; a persistent
+  429 raises `RateLimitedError`, a persistent 5xx/transport failure `DataSourceError`.
 
 ## Feature / label series
 
@@ -64,17 +84,25 @@ exactly, in this order:
 | `pre_session` | The trading session immediately before `day0`. |
 | `day0` | `event_date` itself if it's a trading session, else the next one. |
 | `day1` | The trading session immediately after `day0`. |
-| `sigma_pre_daily` | Daily (not annualized) stdev of the 30 log returns (31 closes) ending at `pre_session`. |
-| `adv_usd_pre20` | 20-trading-day average dollar volume ending at `pre_session`. |
-| `adv_usd_day0_day1` | Average dollar volume over `day0`/`day1` only — no other post-entry window is computed anywhere in this library. |
+| `sigma_pre_daily` | Daily (not annualized) stdev of the 30 log returns (31 closes) ending at `pre_session`, computed on **total-return** closes. |
+| `adv_usd_pre20` | 20-trading-day average dollar volume ending at `pre_session`, **raw** close × raw volume — dollars actually traded. |
+| `adv_usd_day0_day1` | Average dollar volume over `day0`/`day1` only (raw basis) — no other post-entry window is computed anywhere in this library. |
 | `days_to_expiry` | Calendar days from `day0` to the nearest option expiry strictly after `day0`. The "nearest expiry after" convention is kept as originally specified; any bias this introduces is left for the project team to adjust, not fixed here. |
 | `next_earnings_session` | **Realized**, not forecast: the following row's `event_date`, filled in only after sorting. `NaT` for the most recent filing. Never use this as a model input for `day0` itself — it's hindsight. |
 | `call_volume` / `put_volume` | Contract volume traded on `day0` for the chosen ATM straddle's call/put leg. |
 | `is_stale` | `True` whenever either leg of the straddle traded zero volume on `day0` (a stale daily close) — including an untraded contract, which `PolygonOptionsSource.daily_close` reports as `{"close": NaN, "volume": 0.0}` rather than raising on its HTTP 404. |
 
+The ATM straddle is chosen with `spot` = the **raw** day-0 close — historical option
+strikes are on the raw (as-traded) basis, so a split-adjusted spot would pick the wrong
+strike for any event preceding a later split. The chain query itself is filtered
+server-side: expirations in `(day0, day0 + 40]` days and strikes within ±20% of spot
+(`PolygonOptionsSource.contracts_as_of`'s `expiration_*`/`strike_*` params), with an
+`expired`+`active` union when the window can reach today.
+
 A filing too close to either edge of the available calendar/price history to compute (not
 enough trading-session lookback, no expiry found, no matching call/put in the chain, or a
-ticker bar missing on `day0`/`day1` — e.g. a halt while the market stayed open) is
+ticker bar missing on `day0`/`day1` in either the adjusted or the raw frame — e.g. a halt
+while the market stayed open) is
 **silently skipped** — it does not appear as a null row, and it does not raise.
 
 Issue 3 from the original spec review ("weekly ranking lookahead") is out of scope: this
@@ -152,6 +180,7 @@ Precedence: **environment variable > `config/config.yaml` > hardcoded default.**
 | `DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT` | `cache_disk_size_limit` |
 | `DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS` | `membership_max_staleness_days` |
 | `DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR` | `membership_tables_dir` |
+| `DATA_UNIVERSE_USER_AGENT` | `user_agent` |
 
 The Polygon API key is held only in memory and sent as an `Authorization: Bearer` header —
 never interpolated into a URL, never logged.

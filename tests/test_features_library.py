@@ -40,7 +40,8 @@ def test_dollar_volume_1d_equals_close_times_volume(source):
     result = registry.compute(
         registry.FEATURE_REGISTRY, "dollar_volume_1d", "AAPL", "2024-03-01", "2024-03-10", source
     )
-    bars = source.daily_bars("AAPL", "2024-03-01", "2024-03-10")
+    # Dollar volume is a price level, so it uses raw bars -- not total-return ones.
+    bars = source.daily_bars_raw("AAPL", "2024-03-01", "2024-03-10")
     expected = (bars["close"] * bars["volume"]).values
     assert result.values == pytest.approx(expected)
 

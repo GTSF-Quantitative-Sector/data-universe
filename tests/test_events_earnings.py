@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from data_universe.events.earnings import build_pead_events
-from data_universe.sources.fakes import FakePolygonSource
+from data_universe.sources.fakes import FakeMarket, FakePolygonSource
 
 
 class FakeEdgarSource:
@@ -31,7 +31,7 @@ class FakeEdgarSource:
 
 
 class FakeOptionsSource(FakePolygonSource):
-    def contracts_as_of(self, underlying, as_of_date):
+    def contracts_as_of(self, underlying, as_of_date, **filters):  # filters ignored
         expiries = ["2024-02-16", "2024-03-15", "2024-05-17", "2024-06-21"]
         rows = []
         for expiry in expiries:
@@ -182,3 +182,105 @@ def test_untraded_option_contract_marks_event_stale_not_dropped():
     )
     assert len(events) == 2
     assert events["is_stale"].all()
+
+
+# --- v0.6.0: raw spot / raw dollars / filtered chain ------------------------------
+
+
+class RecordingOptionsSource(FakePolygonSource):
+    """Builds a chain with one strike near the raw spot and one near the split-adjusted
+    spot on the expiry after day0, honors no filters, and records every call."""
+
+    def __init__(self, market, strikes):
+        super().__init__(market)
+        self._strikes = strikes
+        self.chain_calls = []
+        self.priced = []
+
+    def contracts_as_of(self, underlying, as_of_date, **filters):
+        self.chain_calls.append((as_of_date, filters))
+        rows = []
+        for strike in self._strikes:
+            for kind, flag in (("call", "C"), ("put", "P")):
+                rows.append(
+                    {
+                        "ticker": f"O:{underlying}240216{flag}{int(strike * 1000):08d}",
+                        "expiration_date": "2024-02-16",
+                        "strike_price": strike,
+                        "contract_type": kind,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def daily_close(self, option_ticker, date):
+        self.priced.append(option_ticker)
+        return {"close": 2.5, "volume": 10.0}
+
+
+def _split_market():
+    # AAPL splits 4-for-1 AFTER the 2024-02-01 event: the raw spot that day is 4x the
+    # split-adjusted one, and historical option strikes are on the raw basis.
+    return FakeMarket(splits={"AAPL": [("2024-03-01", 4.0)]})
+
+
+def test_atm_strike_uses_raw_spot_when_a_split_happens_later():
+    market = _split_market()
+    source = FakePolygonSource(market)
+    raw_spot = source.daily_bars_raw("AAPL", "2024-02-01", "2024-02-01")["close"].iloc[0]
+    split_spot = source.daily_bars_split_adjusted("AAPL", "2024-02-01", "2024-02-01")[
+        "close"
+    ].iloc[0]
+    assert raw_spot == pytest.approx(4.0 * split_spot)
+    options = RecordingOptionsSource(market, strikes=[round(raw_spot), round(split_spot)])
+    events = build_pead_events(
+        "AAPL",
+        FakeEdgarSource(filing_dates=["2024-02-01T20:15:00.000Z"]),
+        source,
+        options,
+        calendar_start="2023-10-01",
+        calendar_end="2024-06-01",
+    )
+    assert len(events) == 1
+    chosen_strikes = {int(t[-8:]) / 1000 for t in options.priced}
+    assert chosen_strikes == {float(round(raw_spot))}
+
+
+def test_chain_is_requested_with_expiry_and_strike_filters():
+    market = _split_market()
+    source = FakePolygonSource(market)
+    raw_spot = source.daily_bars_raw("AAPL", "2024-02-01", "2024-02-01")["close"].iloc[0]
+    options = RecordingOptionsSource(market, strikes=[round(raw_spot)])
+    build_pead_events(
+        "AAPL",
+        FakeEdgarSource(filing_dates=["2024-02-01T20:15:00.000Z"]),
+        source,
+        options,
+        calendar_start="2023-10-01",
+        calendar_end="2024-06-01",
+    )
+    (as_of_date, filters), = options.chain_calls
+    assert as_of_date == "2024-02-01"
+    assert filters["expiration_gte"] == "2024-02-02"
+    assert filters["expiration_lte"] == "2024-03-12"
+    assert filters["strike_gte"] == pytest.approx(0.8 * raw_spot)
+    assert filters["strike_lte"] == pytest.approx(1.2 * raw_spot)
+
+
+def test_adv_usd_pre20_is_raw_dollar_volume():
+    market = _split_market()
+    source = FakePolygonSource(market)
+    events = build_pead_events(
+        "AAPL",
+        FakeEdgarSource(filing_dates=["2024-02-01T20:15:00.000Z"]),
+        source,
+        FakeOptionsSource(market),
+        calendar_start="2023-10-01",
+        calendar_end="2024-06-01",
+    )
+    row = events.iloc[0]
+    raw = source.daily_bars_raw("AAPL", "2023-10-01", "2024-02-05")
+    dollars = pd.Series(
+        (raw["close"] * raw["volume"]).values, index=raw.index.tz_localize(None).normalize()
+    )
+    expected = dollars.loc[dollars.index <= row["pre_session"]].tail(20).mean()
+    assert row["adv_usd_pre20"] == pytest.approx(expected)

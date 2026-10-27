@@ -3,26 +3,35 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
+from data_universe import config
 from data_universe.cache import reset_cache
+from data_universe.sources import edgar
+from data_universe.sources.base import DataSourceError
 from data_universe.sources.edgar import EdgarSource
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def _reset_state(monkeypatch):
+    config.reset()
     reset_cache()
+    monkeypatch.setattr(edgar, "_SEC_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(edgar, "_warned_placeholder", True)
     yield
+    config.reset()
     reset_cache()
 
 
 class FakeResponse:
-    def __init__(self, json_data):
+    def __init__(self, json_data, status_code=200):
         self._json_data = json_data
+        self.status_code = status_code
 
     def json(self):
         return self._json_data
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 def test_get_cik_sends_descriptive_user_agent():
@@ -174,3 +183,82 @@ def test_earnings_8k_filings_pages_through_filings_files():
         "https://data.sec.gov/submissions/CIK0000320193-submissions-001.json"
     )
     assert second_call[1]["headers"]["User-Agent"] == "my-org contact@example.org"
+
+
+# --- v0.6.0: fair-access hardening -----------------------------------------------
+
+_TICKERS = {
+    "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+    "1": {"cik_str": 789019, "ticker": "MSFT", "title": "Microsoft"},
+    "2": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA"},
+}
+
+
+def test_company_tickers_is_downloaded_once_for_many_lookups():
+    session = Mock()
+    session.get.return_value = FakeResponse(_TICKERS)
+    source = EdgarSource(session=session, user_agent="org me@example.org")
+    assert [source.get_cik(t) for t in ("AAPL", "MSFT", "NVDA")] == [
+        "320193", "789019", "1045810",
+    ]
+    assert session.get.call_count == 1
+
+
+def test_user_agent_precedence_argument_then_config_then_placeholder(monkeypatch):
+    session = Mock()
+    session.get.return_value = FakeResponse(_TICKERS)
+    config.set_user_agent("from-config me@example.org")
+    EdgarSource(session=session, user_agent="from-arg me@example.org").ticker_map()
+    assert session.get.call_args[1]["headers"]["User-Agent"] == "from-arg me@example.org"
+    reset_cache()
+    EdgarSource(session=session).ticker_map()
+    assert session.get.call_args[1]["headers"]["User-Agent"] == "from-config me@example.org"
+    reset_cache()
+    config.set_user_agent(None)
+    monkeypatch.setattr(edgar, "_warned_placeholder", False)
+    with pytest.warns(UserWarning, match="placeholder User-Agent"):
+        EdgarSource(session=session).ticker_map()
+    assert session.get.call_args[1]["headers"]["User-Agent"] == edgar.PLACEHOLDER_USER_AGENT
+
+
+def test_user_agent_from_environment(monkeypatch):
+    monkeypatch.setenv("DATA_UNIVERSE_USER_AGENT", "env-org me@example.org")
+    config.reset()
+    assert config.get_user_agent() == "env-org me@example.org"
+
+
+def test_transient_errors_are_retried(monkeypatch):
+    monkeypatch.setattr("data_universe.sources.http.time.sleep", lambda s: None)
+    session = Mock()
+    session.get.side_effect = [FakeResponse({}, 429), FakeResponse({}, 503), FakeResponse(_TICKERS)]
+    source = EdgarSource(session=session, user_agent="org me@example.org")
+    assert source.get_cik("AAPL") == "320193"
+    assert session.get.call_count == 3
+
+
+def test_403_raises_with_user_agent_guidance_and_no_retry():
+    session = Mock()
+    session.get.return_value = FakeResponse({}, 403)
+    source = EdgarSource(session=session, user_agent="org me@example.org")
+    with pytest.raises(DataSourceError, match="User-Agent"):
+        source.get_cik("AAPL")
+    assert session.get.call_count == 1
+
+
+def test_throttle_spaces_requests_process_wide(monkeypatch):
+    clock = {"now": 100.0}
+    sleeps = []
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(edgar, "_SEC_MIN_INTERVAL_SECONDS", 0.11)
+    monkeypatch.setattr(edgar, "_last_request_at", None)
+    monkeypatch.setattr(edgar.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(edgar.time, "sleep", fake_sleep)
+    edgar._throttle()
+    clock["now"] += 0.01
+    edgar._throttle()
+    edgar._throttle()
+    assert sleeps == pytest.approx([0.10, 0.11])

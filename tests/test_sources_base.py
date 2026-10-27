@@ -114,3 +114,17 @@ def test_data_source_subclass_with_both_methods_instantiates():
 
 def test_rate_limited_error_is_a_data_source_error():
     assert issubclass(RateLimitedError, DataSourceError)
+
+
+def test_daily_bars_raw_defaults_to_not_implemented():
+    from data_universe.sources.base import DataSource
+
+    class OnlyAdjusted(DataSource):
+        def daily_bars(self, ticker, start, end):
+            return None
+
+        def hourly_bars(self, ticker, start, end):
+            return None
+
+    with pytest.raises(NotImplementedError, match="daily_bars_raw"):
+        OnlyAdjusted().daily_bars_raw("AAPL", "2024-01-01", "2024-01-31")

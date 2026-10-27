@@ -32,6 +32,7 @@ _ENV_VARS = {
     "cache_disk_size_limit": "DATA_UNIVERSE_CACHE_DISK_SIZE_LIMIT",
     "membership_max_staleness_days": "DATA_UNIVERSE_MEMBERSHIP_MAX_STALENESS_DAYS",
     "membership_tables_dir": "DATA_UNIVERSE_MEMBERSHIP_TABLES_DIR",
+    "user_agent": "DATA_UNIVERSE_USER_AGENT",
 }
 
 # Maps a config/config.yaml top-level key to the internal state key it feeds.
@@ -50,6 +51,7 @@ _YAML_KEYS = {
     "cache_disk_size_limit_bytes": "cache_disk_size_limit",
     "membership_max_staleness_days": "membership_max_staleness_days",
     "membership_tables_dir": "membership_tables_dir",
+    "user_agent": "user_agent",
 }
 
 _state: dict = {}
@@ -88,6 +90,7 @@ def reset() -> None:
     _state["cache_disk_size_limit"] = _default("cache_disk_size_limit", None)
     _state["membership_max_staleness_days"] = _default("membership_max_staleness_days", 45)
     _state["membership_tables_dir"] = _default("membership_tables_dir", None)
+    _state["user_agent"] = _default("user_agent", None)
     _state["project"] = None
 
 
@@ -268,6 +271,20 @@ def get_membership_tables_dir() -> Optional[str]:
     return _state["membership_tables_dir"]
 
 
+def set_user_agent(user_agent: Optional[str]) -> None:
+    """Set the User-Agent sent to SEC EDGAR and Wikipedia, e.g.
+    "gtsf-quant data_universe (you@example.edu)". SEC requires a real contact and
+    may block placeholder agents. None (default) falls back to each source's
+    placeholder (EDGAR warns when it does).
+    """
+    _state["user_agent"] = user_agent
+
+
+def get_user_agent() -> Optional[str]:
+    """Return the configured User-Agent, or None if unset."""
+    return _state["user_agent"]
+
+
 def load_yaml(path: str = "config/config.yaml") -> None:
     """Load settings from a YAML file. Environment variables still take precedence:
     a key present in both the YAML file and the environment keeps its environment value.
@@ -290,7 +307,12 @@ def load_yaml(path: str = "config/config.yaml") -> None:
         if env_var and os.environ.get(env_var) is not None:
             continue  # environment variable wins
         value = data[yaml_key]
-        if state_key in ("cache_disk_dir", "cache_disk_size_limit", "membership_tables_dir"):
+        if state_key in (
+            "cache_disk_dir",
+            "cache_disk_size_limit",
+            "membership_tables_dir",
+            "user_agent",
+        ):
             # These keys document "leave empty to disable this feature" (see
             # config/config.example.yaml); an empty/whitespace-only string means None,
             # not a literal "" value, and must not reach int().

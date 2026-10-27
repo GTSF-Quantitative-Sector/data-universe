@@ -9,6 +9,16 @@ against a known planted truth instead of against the code itself. The same
 `hash()`) and for any request window (each series is generated from `_EPOCH`
 and sliced, so a wider window's bars are a strict extension of a narrower
 one's -- the same date always has the same price).
+
+Corporate actions: the generated series is the **total-return** series
+(`daily_bars`). Each non-index ticker also pays a deterministic quarterly cash
+dividend (`dividend_yield` of the prior close, every 63rd session with a
+per-ticker phase) and may carry configured `splits`; `split_adjusted_bars`
+and `raw_bars` are derived from the total-return series by taking those
+actions back out, and `dividends` reports the cash amounts on the basis
+`adjust.DIVIDEND_CASH_BASIS` names -- so `adjust.apply_total_return(split_adjusted,
+adjust.dividend_factors(raw_close, dividends))` reproduces `daily_bars` up to a
+constant scale, exactly like the real source.
 """
 from __future__ import annotations
 
@@ -18,12 +28,15 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from data_universe.sources import adjust
 from data_universe.sources.base import BAR_COLUMNS, NY_TZ, filter_regular_hours
 
 DEFAULT_SEED = 20240101
 PLANTED_BETA = 1.5
 PLANTED_ALPHA = 0.0
 PLANTED_VIX = 16.0
+DEFAULT_DIVIDEND_YIELD = 0.004  # per quarter, as a fraction of the prior close
+_DIVIDEND_EVERY = 63  # sessions between ex-dates
 
 _EPOCH = "1990-01-01"
 _STAMPS_PER_SESSION = {"1d": 1, "1h": 9}
@@ -89,6 +102,10 @@ class FakeMarket:
         alpha: Planted daily log-return alpha of every non-proxy ticker.
         proxy_ticker: The market proxy ticker (default "SPY").
         vix_level: Constant VIX close used for every session.
+        dividend_yield: Quarterly cash dividend as a fraction of the prior close,
+            paid by every ticker not starting with "I:". 0 disables dividends.
+        splits: Optional `{ticker: [("YYYY-MM-DD", ratio), ...]}` -- e.g. `4.0` for a
+            4-for-1 split effective (first split-adjusted session) on that date.
     """
 
     def __init__(
@@ -98,12 +115,16 @@ class FakeMarket:
         alpha: float = PLANTED_ALPHA,
         proxy_ticker: str = "SPY",
         vix_level: float = PLANTED_VIX,
+        dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
+        splits: Optional[dict] = None,
     ) -> None:
         self.seed = seed
         self.beta = beta
         self.alpha = alpha
         self.proxy_ticker = proxy_ticker
         self.vix_level = vix_level
+        self.dividend_yield = dividend_yield
+        self.splits = splits or {}
 
     def _rng(self, ticker: str, freq: str) -> np.random.Generator:
         """Deterministic per-(seed, ticker, freq) generator, stable across
@@ -141,8 +162,17 @@ class FakeMarket:
         and slice it down to `[start, end]`, so every window of the same series
         sees identical prices for a given date.
         """
+        return self._slice(self._full_bars(ticker, end, freq), start, freq)
+
+    @staticmethod
+    def _slice(bars: pd.DataFrame, start: str, freq: str) -> pd.DataFrame:
         if pd.Timestamp(start) < pd.Timestamp(_EPOCH):
             raise ValueError(f"start {start!r} precedes FakeMarket's epoch {_EPOCH!r}")
+        offset = np.busday_count(_EPOCH, start) * _STAMPS_PER_SESSION[freq]
+        return bars.iloc[offset:]
+
+    def _full_bars(self, ticker: str, end: str, freq: str) -> pd.DataFrame:
+        """The unsliced total-return series from `_EPOCH` through `end`."""
         index = _session_index(_EPOCH, end, freq)
         loc, scale, noise_scale = _DAILY_PARAMS if freq == "1d" else _HOURLY_PARAMS
         market_returns = self._rng(self.proxy_ticker, freq).normal(loc, scale, size=len(index))
@@ -151,9 +181,75 @@ class FakeMarket:
         else:
             noise = self._rng(ticker, freq).normal(0.0, noise_scale, size=len(index))
             returns = self.alpha + self.beta * market_returns + noise
-        bars = _bars_from_log_returns(index, returns, start_price=100.0)
-        offset = np.busday_count(_EPOCH, start) * _STAMPS_PER_SESSION[freq]
-        return bars.iloc[offset:]
+        return _bars_from_log_returns(index, returns, start_price=100.0)
+
+    def _ex_positions(self, ticker: str, n: int) -> np.ndarray:
+        """Positions (in the epoch-based daily index) of `ticker`'s ex-dividend dates."""
+        if ticker.startswith("I:") or self.dividend_yield == 0:
+            return np.array([], dtype=int)
+        digest = hashlib.sha256(f"{self.seed}|{ticker}|div".encode()).digest()
+        phase = int.from_bytes(digest[:8], "little") % _DIVIDEND_EVERY
+        positions = np.arange(phase, n, _DIVIDEND_EVERY)
+        return positions[positions > 0]
+
+    def _corporate_action_series(self, ticker: str, end: str):
+        """`(split_adjusted, raw, ex_positions)` daily frames from `_EPOCH` through `end`."""
+        total_return = self._full_bars(ticker, end, "1d")
+        n = len(total_return)
+        ex_positions = self._ex_positions(ticker, n)
+        is_ex = np.zeros(n, dtype=bool)
+        is_ex[ex_positions] = True
+        # K(t): product of (1 - y) over ex-dates on/before t takes the dividends back out.
+        dividend_factor = (1.0 - self.dividend_yield) ** np.cumsum(is_ex)
+        dates = total_return.index.tz_localize(None).normalize()
+        # M(t): product of split ratios effective strictly after t (present-anchored).
+        split_multiplier = np.ones(n)
+        for date, ratio in self.splits.get(ticker, []):
+            split_multiplier[dates < pd.Timestamp(date)] *= float(ratio)
+
+        price_columns = adjust.PRICE_COLUMNS
+        split_adjusted = total_return.copy()
+        split_adjusted[price_columns] = total_return[price_columns].mul(dividend_factor, axis=0)
+        raw = split_adjusted.copy()
+        raw[price_columns] = split_adjusted[price_columns].mul(split_multiplier, axis=0)
+        raw["volume"] = split_adjusted["volume"] / split_multiplier
+        return split_adjusted, raw, ex_positions
+
+    def split_adjusted_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Daily bars with dividends taken out but splits still adjusted -- what the
+        vendor's `adjusted=true` returns."""
+        split_adjusted, _, _ = self._corporate_action_series(ticker, end)
+        return self._slice(split_adjusted, start, "1d")
+
+    def raw_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Daily bars as actually traded: no split or dividend adjustment; volume in
+        raw shares."""
+        _, raw, _ = self._corporate_action_series(ticker, end)
+        return self._slice(raw, start, "1d")
+
+    def dividends(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """Cash dividends with an ex-date in `[start, end]`, `adjust.DIVIDEND_COLUMNS`.
+
+        Each amount is `dividend_yield` times the prior session's close on the
+        `adjust.DIVIDEND_CASH_BASIS` basis, so its adjustment factor is exactly
+        `1 - dividend_yield`.
+        """
+        split_adjusted, raw, ex_positions = self._corporate_action_series(ticker, end)
+        basis = raw if adjust.DIVIDEND_CASH_BASIS == "raw" else split_adjusted
+        dates = split_adjusted.index.tz_localize(None).normalize()
+        ex_dates = dates[ex_positions]
+        amounts = self.dividend_yield * basis["close"].to_numpy()[ex_positions - 1]
+        keep = (ex_dates >= pd.Timestamp(start)) & (ex_dates <= pd.Timestamp(end))
+        if not keep.any():
+            return adjust.empty_dividends()
+        return pd.DataFrame(
+            {
+                "ex_dividend_date": ex_dates[keep],
+                "cash_amount": amounts[keep],
+                "currency": "USD",
+                "dividend_type": "CD",
+            }
+        )[adjust.DIVIDEND_COLUMNS].reset_index(drop=True)
 
     def vix_closes(self, start: str, end: str) -> pd.Series:
         """Constant VIX close series (`vix_level`) over the given session range."""
@@ -173,8 +269,20 @@ class FakePolygonSource:
         self.market = market or FakeMarket()
 
     def daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """See `FakeMarket.daily_bars`."""
+        """See `FakeMarket.daily_bars` (the total-return series)."""
         return self.market.daily_bars(ticker, start, end)
+
+    def daily_bars_split_adjusted(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """See `FakeMarket.split_adjusted_bars`."""
+        return self.market.split_adjusted_bars(ticker, start, end)
+
+    def daily_bars_raw(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """See `FakeMarket.raw_bars`."""
+        return self.market.raw_bars(ticker, start, end)
+
+    def dividends(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """See `FakeMarket.dividends`."""
+        return self.market.dividends(ticker, start, end)
 
     def hourly_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
         """`FakeMarket.hourly_bars` filtered to regular hours, honoring the

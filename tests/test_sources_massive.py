@@ -179,14 +179,15 @@ def test_inherited_daily_bars_use_the_massive_host():
     session.get.return_value = FakeResponse(
         200, {"results": [{"t": ts_ms, "o": 1, "h": 2, "l": 1, "c": 2, "v": 10, "vw": 1.5}]}
     )
-    bars = MassiveSource(session=session).daily_bars("AAPL", "2024-01-02", "2024-01-02")
+    source = MassiveSource(session=session)
+    bars = source.daily_bars_split_adjusted("AAPL", "2024-01-02", "2024-01-02")
     assert len(bars) == 1
     url = session.get.call_args[0][0]
     assert url.startswith("https://api.massive.com/v2/aggs/ticker/AAPL/range/1/day/")
 
 
 def test_inherited_429_retry_then_rate_limited_error(monkeypatch):
-    monkeypatch.setattr("data_universe.sources.polygon.time.sleep", lambda s: None)
+    monkeypatch.setattr("data_universe.sources.http.time.sleep", lambda s: None)
     session = Mock()
     session.get.return_value = FakeResponse(429)
     source = MassiveSource(session=session, max_retries=2, backoff_seconds=0.01)

@@ -12,17 +12,23 @@ from __future__ import annotations
 import pandas as pd
 
 
-def as_of(source, underlying: str, as_of_date: str) -> pd.DataFrame:
+def as_of(source, underlying: str, as_of_date: str, **filters) -> pd.DataFrame:
     """The listed option chain for `underlying` as of `as_of_date`.
 
     Args:
-        source: An object with `.contracts_as_of(underlying, as_of_date)`.
+        source: An object with `.contracts_as_of(underlying, as_of_date, **filters)`.
         underlying: Underlying ticker symbol.
         as_of_date: Date "YYYY-MM-DD".
+        **filters: Optional server-side filters forwarded to `contracts_as_of`
+            (`expiration_gte`, `expiration_lte`, `strike_gte`, `strike_lte`,
+            `contract_type`). With none given, the source is called with just
+            `(underlying, as_of_date)`, so two-argument sources keep working.
 
     Returns:
         A chain DataFrame (see module docstring for the schema).
     """
+    if filters:
+        return source.contracts_as_of(underlying, as_of_date, **filters)
     return source.contracts_as_of(underlying, as_of_date)
 
 

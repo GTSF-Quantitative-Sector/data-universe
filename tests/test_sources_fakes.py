@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from data_universe.sources import adjust
 from data_universe.sources.base import BAR_COLUMNS
 from data_universe.sources.fakes import FakeMarket, FakePolygonSource
 
@@ -146,3 +147,73 @@ def test_fake_polygon_source_rejects_unknown_index_ticker():
 def test_fake_polygon_source_default_market_is_a_fake_market():
     source = FakePolygonSource()
     assert isinstance(source.market, FakeMarket)
+
+
+# --- v0.6.0: dividends, splits, raw and split-adjusted series ---------------------
+
+
+def test_real_adjustment_reproduces_fake_total_return_series_up_to_scale():
+    market = FakeMarket(splits={"AAPL": [("2024-03-01", 4.0)]})
+    args = ("AAPL", "2023-06-01", "2024-06-01")
+    total_return = market.daily_bars(*args)
+    split_adjusted = market.split_adjusted_bars(*args)
+    raw = market.raw_bars(*args)
+    dividends = market.dividends(*args)
+    assert len(dividends) >= 3
+    rebuilt = adjust.apply_total_return(
+        split_adjusted, adjust.dividend_factors(raw["close"], dividends)
+    )
+    ratio = rebuilt["close"] / total_return["close"]
+    assert ratio.max() / ratio.min() - 1.0 < 1e-12
+
+
+def test_raw_bars_undo_splits_and_volume_moves_inversely():
+    market = FakeMarket(splits={"AAPL": [("2024-03-01", 4.0)]})
+    split_adjusted = market.split_adjusted_bars("AAPL", "2024-02-26", "2024-03-05")
+    raw = market.raw_bars("AAPL", "2024-02-26", "2024-03-05")
+    before = raw.index < pd.Timestamp("2024-03-01", tz="America/New_York")
+    assert (raw["close"] / split_adjusted["close"])[before].tolist() == pytest.approx([4.0] * 4)
+    assert (raw["close"] / split_adjusted["close"])[~before].tolist() == pytest.approx([1.0] * 3)
+    assert (raw["volume"] * 4.0)[before].tolist() == pytest.approx(
+        split_adjusted["volume"][before].tolist()
+    )
+
+
+def test_dividend_series_are_window_independent():
+    market = FakeMarket()
+    narrow = market.raw_bars("AAPL", "2023-02-01", "2023-02-28")
+    wide = market.raw_bars("AAPL", "2023-01-01", "2023-03-31")
+    pd.testing.assert_frame_equal(narrow, wide.loc[narrow.index])
+    all_divs = market.dividends("AAPL", "2022-01-01", "2023-12-31")
+    some = market.dividends("AAPL", "2023-01-01", "2023-06-30")
+    assert set(some["ex_dividend_date"]) <= set(all_divs["ex_dividend_date"])
+
+
+def test_dividend_factor_is_exactly_one_minus_yield():
+    market = FakeMarket(dividend_yield=0.01)
+    raw = market.raw_bars("MSFT", "2023-01-01", "2023-12-31")
+    factors = adjust.dividend_factors(
+        raw["close"], market.dividends("MSFT", "2023-01-01", "2023-12-31")
+    )
+    assert factors.tolist() == pytest.approx([0.99] * len(factors))
+
+
+def test_no_dividends_for_index_tickers_or_zero_yield():
+    assert FakeMarket().dividends("I:VIX", "2020-01-01", "2023-01-01").empty
+    zero = FakeMarket(dividend_yield=0.0)
+    assert zero.dividends("AAPL", "2020-01-01", "2023-01-01").empty
+    pd.testing.assert_frame_equal(
+        zero.raw_bars("AAPL", "2023-01-01", "2023-02-01"),
+        zero.daily_bars("AAPL", "2023-01-01", "2023-02-01"),
+    )
+
+
+def test_fake_source_exposes_raw_split_adjusted_and_dividends():
+    market = FakeMarket()
+    source = FakePolygonSource(market)
+    args = ("AAPL", "2023-01-01", "2023-06-01")
+    pd.testing.assert_frame_equal(source.daily_bars_raw(*args), market.raw_bars(*args))
+    pd.testing.assert_frame_equal(
+        source.daily_bars_split_adjusted(*args), market.split_adjusted_bars(*args)
+    )
+    pd.testing.assert_frame_equal(source.dividends(*args), market.dividends(*args))
