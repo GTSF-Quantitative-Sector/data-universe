@@ -4,7 +4,9 @@ A prioritized plan for improving the data `data_universe` fetches, driven by the
 research (earnings announcements + options) and the GNN ranker (a large, point-in-time
 S&P 500 universe, 2015 to now). Phase 1 shipped as v0.6.0 — see
 `docs/design/2026-10-27-v0.6.0-data-correctness-and-hardening.md` for its design and
-behavior changes. Phase 2 shipped as v0.7.0. Phase 7a shipped as v0.8.0.
+behavior changes. Phase 2 shipped as v0.7.0, Phase 7a as v0.8.0, Phase 3a (raw store +
+validation flags) as v0.9.0, and the as-of CIK resolver as v0.10.0 — see
+`docs/design/2026-11-03-v0.7.0-to-v0.10.0-changes.md`.
 
 ## Phases
 
@@ -127,7 +129,8 @@ The probe ran 2026-11-03 against the Massive host (report:
   companyconcept first-reported finding; flat files need S3 creds and FRED
   needs a key (both skipped).
 
-1. Merge v0.6.0+ (`v0.6.0` through `v0.9.1`) to `main`.
+1. ~~Merge v0.6.0+ to `main`~~ — **merged 2026-11-03** (`main` at v0.10.0); see
+   `docs/design/2026-11-03-v0.7.0-to-v0.10.0-changes.md` for everything that shipped.
 2. ~~Implement a `cik_resolver` for `build_pead_panel`~~ — **shipped in v0.10.0**
    (`massive_cik_resolver` over `/v3/reference/tickers/{ticker}?date=`, the
    default when the panel constructs Massive sources). Predecessor-CIK gaps
