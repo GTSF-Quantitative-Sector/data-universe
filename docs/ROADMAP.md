@@ -13,7 +13,7 @@ behavior changes. Phase 2 shipped as v0.7.0. Phase 7a shipped as v0.8.0.
 | 0 | Merge v0.5.0 (`ethan` → `main`); consider merging Mark's `RESEARCH_CONTEXT.md` | all | S (user) | none |
 | **1** | **Correctness + hardening — shipped as v0.6.0** | PEAD, GNN | L | 0 |
 | **2** | **PEAD event table v2 — shipped as v0.7.0** | PEAD | M | 1 (+ probe for the as-of CIK resolver) |
-| 3 | Durable raw store + bulk ingest + ingest validation | GNN, PEAD | XL | 1 + probe |
+| 3 | (3a shipped as v0.9.0)  Durable raw store + bulk ingest + ingest validation | GNN, PEAD | XL | 1 + probe |
 | 4 | Identity resolution (`membership/identity.py`) | GNN, PEAD | L | 1 + probe (3 helps) |
 | 5 | Precompute v2 (panels, versioning, tombstones) | all | M | 3 |
 | 6 | GNN datasets (return panels, open-to-open labels, correlation edges) | GNN | L | 3, 4, 5 |
@@ -50,16 +50,17 @@ don't merge to `main` until the probe confirms `dividend_cash_basis`
 
 ### Phase 3 — durable raw store + bulk ingest
 
-- `data_universe/store/` with partitioned parquet under `<data_dir>/raw/`: split-adjusted
-  and raw daily bars, dividends, splits, option contracts, option daily aggregates.
-- A coverage manifest per (dataset, key): range, `fetched_at`, source, status
-  (`ok`/`empty`/`not_entitled`), tool version.
-- `StoreBackedSource(DataSource)` fetches only missing ranges, stores completed sessions
-  only (never a partial "today"). Total-return anchoring moves to the store's last
-  date; only ratios matter, so consumers see no change.
+- **3a shipped as v0.9.0**: `data_universe/store/` — parquet + JSON manifest per
+  (dataset, key) under `<data_dir>/raw/` for split-adjusted and raw daily bars,
+  index daily bars and dividends (splits/options datasets deferred), each fetch
+  recorded with range, `fetched_at`, source, status (`ok`/`empty`/`not_entitled`),
+  tool version. `StoreBackedSource(DataSource)` fetches only missing ranges (hull,
+  one call), stores completed sessions only (complete from 06:00 ET the next day),
+  rebases on splits, and passes the still-open tail straight through. Total-return
+  anchoring stays window-end, so outputs are identical.
 - Flat-file ingest if the probe shows entitlement: ~2,950 files per dataset for
   2015-now instead of millions of REST calls.
-- Ingest validation flags (never fixes): OHLC sanity, duplicate stamps, gaps vs the SPY
+- Validation flags shipped in v0.9.0 (3a) — never fixes: OHLC sanity, duplicate stamps, gaps vs the SPY
   calendar, jumps with no split record, stale runs.
 - Acceptance: precompute over 500 tickers × all features makes O(tickers) upstream
   calls; a rerun makes zero.
@@ -127,7 +128,8 @@ states with checkpoints.
 ## Risks
 
 - Dividend cash basis is unverified — mitigated by one constant plus the probe gate.
-- Each bars window costs 3 cached requests until Phase 3.
+- Each bars window costs 3 cached requests unless a `StoreBackedSource` (v0.9.0)
+  wraps the source — then only the still-open tail and first-time ranges hit upstream.
 - Adjusted levels depend on the window by design; every current feature is
   scale-invariant or uses raw prices.
 - Every return-based value shifts slightly vs v0.5.0 — recompute precomputed outputs.

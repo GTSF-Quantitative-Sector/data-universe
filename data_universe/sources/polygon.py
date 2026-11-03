@@ -38,7 +38,7 @@ from data_universe.sources.base import (
 from data_universe.sources.http import get_with_retries, url_path
 
 
-class PolygonSource(DataSource):
+class PolygonSource(adjust.TotalReturnMixin, DataSource):
     """Stock and index aggregates and stock dividends from Polygon.io.
 
     Args:
@@ -48,6 +48,10 @@ class PolygonSource(DataSource):
             error/timeout) before raising.
         backoff_seconds: Base backoff in seconds, doubled on each retry.
     """
+
+    # Raw-store family tag: records written through a `StoreBackedSource`
+    # wrapping this source (or a subclass) are stamped "polygon".
+    store_family = "polygon"
 
     def __init__(
         self,
@@ -192,21 +196,6 @@ class PolygonSource(DataSource):
         )
         frame = frame.loc[in_window, adjust.DIVIDEND_COLUMNS]
         return frame.sort_values("ex_dividend_date", kind="stable").reset_index(drop=True)
-
-    def _dividend_factors(self, ticker: str, start: str, end: str) -> pd.Series:
-        """`adjust.dividend_factors` for one window, on the configured cash basis."""
-        if adjust.DIVIDEND_CASH_BASIS == "raw":
-            closes = self.daily_bars_raw(ticker, start, end)["close"]
-        else:
-            closes = self.daily_bars_split_adjusted(ticker, start, end)["close"]
-        return adjust.dividend_factors(closes, self.dividends(ticker, start, end))
-
-    def daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """See `DataSource.daily_bars`: total-return (split + cash dividend)
-        adjusted, anchored at the window's last bar. Three cached requests per
-        (ticker, window): split-adjusted bars, raw bars, dividends."""
-        bars = self.daily_bars_split_adjusted(ticker, start, end)
-        return adjust.apply_total_return(bars, self._dividend_factors(ticker, start, end))
 
     @cached("hourly_bars")
     def hourly_bars_split_adjusted(self, ticker: str, start: str, end: str) -> pd.DataFrame:

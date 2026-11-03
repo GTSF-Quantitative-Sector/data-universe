@@ -1,6 +1,6 @@
 from setuptools import setup
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 DESCRIPTION = "GTSF Quant Sector shared data and feature library."
 
 setup(
@@ -16,6 +16,7 @@ setup(
         "data_universe.events",
         "data_universe.membership",
         "data_universe.fundamentals",
+        "data_universe.store",
     ],
     package_data={
         "data_universe.membership": [

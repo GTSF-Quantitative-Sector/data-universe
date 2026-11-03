@@ -233,6 +233,79 @@ q's own diff; the denominator is the std (ddof=1) of the `window` most
 recent earlier diffs inside ~`window` quarters of lookback, when at least
 `min_obs` exist.
 
+## Raw store
+
+Source: `data_universe/store/raw.py` (`RawStore`) and
+`data_universe/store/source.py` (`StoreBackedSource`), opt-in in v0.9.0 —
+defaults unchanged.
+
+**Layout:** under `root` (default `<config.get_data_dir()>/raw`),
+`<dataset>/<quote(key, safe="")>.parquet` (e.g. `I%3AVIX.parquet`), the same
+stem + `.manifest.json`, and a `.<quoted>.lock` flock target. Datasets:
+`daily_bars_split_adjusted`, `daily_bars_raw`, `index_daily_bars`,
+`dividends`.
+
+**Manifest:** `{"dataset", "key", "schema_version", "fetches": [record]}` with
+`record = {"start", "end", "status" ("ok"|"empty"|"not_entitled"), "rows",
+"fetched_at" (UTC ISO), "source" (upstream class), "family", "tool_version",
+"rebased"}`. `coverage` is the merged union of ok/empty records (intervals
+merge when overlapping or ≤1 day apart); a `schema_version` mismatch reads
+as absent everywhere and the next write discards the old rows and records.
+
+**Coverage semantics:** a requested window splits at `L = _last_complete_date()`
+(a session counts as complete from 06:00 ET the next calendar day). The part
+≤ L is served from the store — gaps inside coverage are filled by fetching
+their hull `[a, b]` in ONE upstream call — and the part > L always goes to
+upstream normally and is never persisted. `not_entitled` is recorded (not
+covered) and re-raised; empty results are covered so they aren't refetched.
+
+**Basis datasets** (`daily_bars_split_adjusted`): if a fetch wouldn't overlap
+a stored row, it extends to the nearest stored row, and if an overlap close
+differs >1e-6 relative (a split rebased the vendor's history) the whole
+coverage is refetched once with `rebased=True`. When a window spans both
+parts, the live fetch starts at the stored slice's last row (not L + 1) for
+the same check; live rows are always cut to row dates >= max(start, L + 1),
+which drops the overlap row before concatenation. Entirely-live windows
+(after L) fetch at `start` and never touch the store.
+
+**Dividends:** stored only when `adjust.DIVIDEND_CASH_BASIS == "raw"` — other
+bases pass straight through (amounts would be basis-dependent; item 30).
+
+**Family guard:** every access checks the manifest's `family` against the
+upstream's (`store_family` attr, else its class name) — a foreign store
+raises `DataSourceError` rather than serve another vendor's data.
+
+**Parity:** the same window returns the same frames as the upstream (parquet
+index `freq` isn't part of the contract); `daily_bars` still composes
+total-return window-end-anchored through `adjust.TotalReturnMixin`.
+
+### Validation flags
+
+Source: `data_universe/store/validate.py` — on-demand flags, never written
+back and never used to alter data. `validate_bars(raw, split_adjusted,
+sessions)` returns a bool `FLAG_COLUMNS` frame indexed by tz-naive `date`,
+only flagged dates:
+
+- `ohlc_bad` — non-finite/non-positive OHLC, high < max(open, close),
+  low > min(open, close), low > high, or non-finite/negative volume.
+- `duplicate_stamp` — the session date occurs more than once in either frame.
+- `calendar_gap` — a session in `sessions` inside [first, last] bar dates has
+  no bar (all False when `sessions` is None).
+- `jump_no_split` — |log close-to-close| > log(1.4) while the raw/adjusted
+  split factor is unchanged (1e-6): an unrecorded split — or a genuine
+  crash/large special dividend (false positives by design).
+- `stale_run` — every date of a >=5-row run of identical closes.
+
+`validate_ticker(source, ticker, start, end)` uses the source's raw +
+split-adjusted bars (sessions default to the calendar ticker's raw dates);
+`validate_tickers(source, tickers, start, end)` returns a `ValidationReport`
+(`flags`: `ticker, date, *FLAG_COLUMNS`; `failed`: ticker -> error,
+per-ticker isolated) and fetches the calendar once per call.
+
+**Cost:** each (dataset, key, range) costs one upstream fetch the first
+time it is requested by ANY process sharing the root and zero afterwards;
+the still-open tail costs one normal (cached) call per request.
+
 ## Precompute parquet output
 
 Source: `data_universe/precompute.py`.

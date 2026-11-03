@@ -134,3 +134,25 @@ def apply_total_return(bars: pd.DataFrame, factors: pd.Series) -> pd.DataFrame:
         if column in result.columns:
             result[column] = result[column].to_numpy(dtype="float64") * multiplier
     return result
+
+
+class TotalReturnMixin:
+    """Total-return `daily_bars` composed from the class's own
+    `daily_bars_split_adjusted`/`daily_bars_raw`/`dividends`, anchored at the
+    window's last bar. Shared so `PolygonSource`/`MassiveSource` and the raw
+    store's `StoreBackedSource` compose identically."""
+
+    def _dividend_factors(self, ticker: str, start: str, end: str) -> pd.Series:
+        """`adjust.dividend_factors` for one window, on the configured cash basis."""
+        if DIVIDEND_CASH_BASIS == "raw":
+            closes = self.daily_bars_raw(ticker, start, end)["close"]
+        else:
+            closes = self.daily_bars_split_adjusted(ticker, start, end)["close"]
+        return dividend_factors(closes, self.dividends(ticker, start, end))
+
+    def daily_bars(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        """See `DataSource.daily_bars`: total-return (split + cash dividend)
+        adjusted, anchored at the window's last bar. Three cached requests per
+        (ticker, window): split-adjusted bars, raw bars, dividends."""
+        bars = self.daily_bars_split_adjusted(ticker, start, end)
+        return apply_total_return(bars, self._dividend_factors(ticker, start, end))

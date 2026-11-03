@@ -95,6 +95,17 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
 - **`labels/`** — the same registry shape (`registry.py`, `LABEL_REGISTRY`), enforcing that
   every name starts with `fwd_`, and 3 concrete labels in `library.py`: `fwd_rv_cc_21d`,
   `fwd_vrp_expost`, `fwd_ret_15d`.
+- **`store/`** — `StoreBackedSource(upstream)` wraps any DataSource with a
+  durable raw store under `<data_dir>/raw/`: each daily dataset is fetched
+  once and reused across calls, processes and reruns. `validate_tickers`
+  flags suspicious stored bars (OHLC, duplicates, gaps, unexplained jumps,
+  stale runs) without altering them:
+  ```python
+  from data_universe import precompute
+  from data_universe.sources.polygon import PolygonSource
+  from data_universe.store import StoreBackedSource
+  precompute(tickers, names, start, end, source=StoreBackedSource(PolygonSource()))
+  ```
 - **`fundamentals/sue.py`** — `quarterly_sue(ticker, cik, edgar_source, price_source)`:
   point-in-time quarterly EPS and SUE from SEC XBRL `companyconcept` facts
   (first-reported only, split-rescaled to each quarter's own basis, derived Q4s).
