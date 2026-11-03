@@ -128,9 +128,10 @@ The probe ran 2026-11-03 against the Massive host (report:
   needs a key (both skipped).
 
 1. Merge v0.6.0+ (`v0.6.0` through `v0.9.1`) to `main`.
-2. Implement a `cik_resolver` for `build_pead_panel` on
-   `/v3/reference/tickers/{ticker}?date=` (`OPEN_QUESTIONS.md` item 24) — the
-   next code step.
+2. ~~Implement a `cik_resolver` for `build_pead_panel`~~ — **shipped in v0.10.0**
+   (`massive_cik_resolver` over `/v3/reference/tickers/{ticker}?date=`, the
+   default when the panel constructs Massive sources). Predecessor-CIK gaps
+   remain — see `OPEN_QUESTIONS.md` item 34.
 3. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
    `pip install -e ".[s3]"` to cover the skipped groups.
 4. Set a real SEC User-Agent contact (the placeholder is polite but generic).

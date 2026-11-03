@@ -110,7 +110,7 @@ to be skipped — anything they can't compute is missing (NaN / NaT / None / `<N
 | `ret_reaction` | Total-return close-to-close return from `pre_announcement_session` to `reaction_session`, from the same `daily_bars` window the event already fetched; NaN when either bar is missing. |
 | `surprise_ratio` | `abs(ret_reaction) / implied_move`, only when both are finite and `implied_move > 0`; else NaN. |
 | `cik` | The filing CIK used for this event, normalized to a digit string via `str(int(cik))`. |
-| `cik_source` | Where `cik` came from: `"explicit"` (a `cik=` argument or `cik_overrides` — a custom `cik_source=` label is recorded instead when given), `"sec_current"` (SEC's current ticker→CIK map via `edgar_source.get_cik`), or a `cik_resolver` label. Passing `cik_source` without `cik` raises `ValueError`. |
+| `cik_source` | Where `cik` came from: `"explicit"` (a `cik=` argument or `cik_overrides` — a custom `cik_source=` label is recorded instead when given), `"massive_as_of"` (Massive ticker details `?date=` via `as_of_cik`), `"sec_current"` (SEC's current ticker→CIK map via `edgar_source.get_cik`), or a `cik_resolver` label. Passing `cik_source` without `cik` raises `ValueError`. |
 
 The ATM straddle is chosen with `spot` = the **raw** day-0 close — historical option
 strikes are on the raw (as-traded) basis, so a split-adjusted spot would pick the wrong
@@ -151,7 +151,11 @@ tickers=None, cik_overrides=None, cik_resolver=None, strict=False) -> PeadPanelR
   `MembershipError`, and the manifest's staleness check (`strict=`) applies first.
 - **CIK resolution**, per candidate interval with `as_of` = `max(interval
   start_date, last session before `start`)`: `cik_overrides[ticker]` (label
-  `"explicit"`) → `cik_resolver(ticker, as_of)` if given and non-None →
+  `"explicit"`) → `cik_resolver(ticker, as_of)` if given and non-None —
+  defaulting to `massive_cik_resolver` on the shared `MassiveOptionsSource`
+  when the price/options sources defaulted (label `"massive_as_of"`,
+  `MassiveSource.as_of_cik` → `ticker_details(ticker, date=as_of)["cik"]`;
+  404 or a missing `cik` falls through) — →
   `edgar_source.get_cik(ticker)` (label `"sec_current"`). Each ticker's intervals
   group by (normalized CIK, label); each group gets one `build_pead_events` call and
   keeps its events only inside that group's own intervals.

@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 from data_universe import config
-from data_universe.events.earnings import EVENT_COLUMNS, build_pead_panel
+from data_universe.events.earnings import (
+    EVENT_COLUMNS,
+    build_pead_panel,
+    massive_cik_resolver,
+)
 from data_universe.fundamentals.sue import SUE_EVENT_COLUMNS
 from data_universe.membership import store
 from data_universe.membership.errors import (
@@ -443,3 +447,88 @@ def test_empty_panel_with_include_sue_has_all_columns(tmp_path):
     assert list(report.events.columns) == EVENT_COLUMNS + SUE_EVENT_COLUMNS
     assert str(report.events["sue_n"].dtype) == "Int64"
     assert str(report.events["eps_derived"].dtype) == "boolean"
+
+
+# --- v0.10.0: massive_as_of CIK resolver + default wiring ------------------------
+
+
+class FakeMassiveOptions(FakeOptionsSource):
+    """Stands in for `MassiveOptionsSource` when the panel constructs its
+    default sources: serves CIKs from a class-level map and records
+    `as_of_cik(ticker, date)` calls."""
+
+    ciks = {}
+    last_instance = None
+
+    def __init__(self):
+        super().__init__()
+        self.as_of_calls = []
+        FakeMassiveOptions.last_instance = self
+
+    def as_of_cik(self, ticker, date):
+        self.as_of_calls.append((ticker, date))
+        return self.ciks.get(ticker)
+
+
+def test_massive_cik_resolver_labels_hits_and_falls_through():
+    class _FakeAsOf:
+        def as_of_cik(self, ticker, date):
+            return {"FB": "1326801"}.get(ticker)
+
+    resolve = massive_cik_resolver(_FakeAsOf())
+    assert resolve("FB", "2020-06-01") == ("1326801", "massive_as_of")
+    assert resolve("GOOGL", "2015-01-02") is None
+
+
+def test_default_sources_wire_the_massive_as_of_resolver(tmp_path, monkeypatch):
+    _save_tables(tmp_path, [[INDEX, "AAA", "2024-01-01", None]])
+    edgar = FakeEdgarSource(
+        {"AAA": "1111111"}, {"7777777": ["2024-05-02T19:15:00.000Z"]}
+    )
+    FakeMassiveOptions.ciks = {"AAA": "7777777"}
+    monkeypatch.setattr(
+        "data_universe.events.earnings.MassiveOptionsSource", FakeMassiveOptions
+    )
+    report = build_pead_panel("2024-04-15", "2024-05-15", edgar_source=edgar,
+                              tickers=["AAA"])
+    row = report.events.iloc[0]
+    assert row["cik"] == "7777777"
+    assert row["cik_source"] == "massive_as_of"
+    # as_of = max(interval start, last session before `start`) = 2024-04-12
+    assert FakeMassiveOptions.last_instance.as_of_calls == [("AAA", "2024-04-12")]
+
+
+def test_default_resolver_falls_through_to_sec_current(tmp_path, monkeypatch):
+    _save_tables(tmp_path, [[INDEX, "AAA", "2024-01-01", None]])
+    edgar = FakeEdgarSource(
+        {"AAA": "1111111"}, {"1111111": ["2024-05-02T19:15:00.000Z"]}
+    )
+    FakeMassiveOptions.ciks = {}  # as_of_cik unknown -> the SEC map wins
+    monkeypatch.setattr(
+        "data_universe.events.earnings.MassiveOptionsSource", FakeMassiveOptions
+    )
+    report = build_pead_panel("2024-04-15", "2024-05-15", edgar_source=edgar,
+                              tickers=["AAA"])
+    row = report.events.iloc[0]
+    assert row["cik"] == "1111111"
+    assert row["cik_source"] == "sec_current"
+
+
+def test_an_explicit_resolver_beats_the_massive_default(tmp_path, monkeypatch):
+    _save_tables(tmp_path, [[INDEX, "AAA", "2024-01-01", None]])
+    edgar = FakeEdgarSource(
+        {"AAA": "1111111"}, {"8888888": ["2024-05-02T19:15:00.000Z"]}
+    )
+    FakeMassiveOptions.ciks = {"AAA": "7777777"}
+    monkeypatch.setattr(
+        "data_universe.events.earnings.MassiveOptionsSource", FakeMassiveOptions
+    )
+    report = build_pead_panel(
+        "2024-04-15", "2024-05-15", edgar_source=edgar, tickers=["AAA"],
+        cik_resolver=lambda ticker, as_of: ("8888888", "custom"),
+    )
+    row = report.events.iloc[0]
+    assert row["cik"] == "8888888"
+    assert row["cik_source"] == "custom"
+    # the default resolver was never consulted
+    assert FakeMassiveOptions.last_instance.as_of_calls == []

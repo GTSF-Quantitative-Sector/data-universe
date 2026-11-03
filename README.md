@@ -121,7 +121,8 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   filing, combining `EdgarSource`, price bars, and the options chain into the PEAD event
   table — v0.7.0 appends the v2 columns (ET acceptance time and announce timing,
   pre-announcement/reaction sessions, the day-0 and pre-announcement straddles,
-  `implied_move`, `ret_reaction`, `surprise_ratio`, `cik`/`cik_source`) after the
+  `implied_move`, `ret_reaction`, `surprise_ratio`, `cik`/`cik_source` — as-of
+  CIK via Massive ticker details `?date=` by default) after the
   unchanged v1 ones. `build_pead_panel(start, end, index_id="sp500", ...)` builds the
   point-in-time, index-wide table with per-ticker failure isolation, a `tickers`
   subset, `cik_overrides` and a pluggable `cik_resolver` hook (schema in

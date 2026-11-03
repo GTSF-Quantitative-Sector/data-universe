@@ -18,7 +18,10 @@ never called live from CI -- see `OPEN_QUESTIONS.md` item 15.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 import pandas as pd
+import requests
 
 from data_universe import config
 from data_universe.cache import cached
@@ -117,19 +120,51 @@ class MassiveSource(PolygonSource):
         return pd.DataFrame(records, columns=TICKER_COLUMNS)
 
     @cached("ticker_details")
-    def ticker_details(self, ticker: str) -> dict:
+    def ticker_details(self, ticker: str, date: Optional[str] = None) -> dict:
         """Reference details for one ticker (name, primary exchange, CIK, FIGIs, SIC, ...).
 
-        Also a cheap way to check that the key and base URL work before a big pull.
+        With `date` the record is as of that date ("YYYY-MM-DD") -- confirmed
+        2026-11-03: FB on 2020-06-01 resolves to Meta's CIK (the SEC's current
+        ticker map has no "FB" at all), and DOW resolves to Dow Chemical
+        (CIK 29915) before 2019 but Dow Inc. (CIK 1751788) after the
+        re-registration. Without `date` it's today's record, as before. Also a
+        cheap way to check that the key and base URL work before a big pull.
 
         Args:
             ticker: Ticker symbol, e.g. "AAPL".
+            date: Optional "YYYY-MM-DD" as-of date for the record.
 
         Returns:
             The `results` object from the API, as a dict (empty if absent).
         """
-        data = self._get(f"{self._base_url()}/v3/reference/tickers/{ticker}")
+        params = {"date": date} if date is not None else None
+        data = self._get(f"{self._base_url()}/v3/reference/tickers/{ticker}", params=params)
         return data.get("results") or {}
+
+    def as_of_cik(self, ticker: str, date: str) -> Optional[str]:
+        """The CIK Massive records for `ticker` as of `date` ("YYYY-MM-DD"), or None.
+
+        A 404 (no record for the symbol on that date, e.g. GOOGL on 2015-01-02
+        and 2016-01-04)
+        or a record without a `cik` both return None -- "unknown here" -- so
+        callers can fall back to another source instead of guessing. Any other
+        error (rate limit, 5xx, entitlement) propagates.
+
+        Args:
+            ticker: Ticker symbol, e.g. "FB".
+            date: As-of date, "YYYY-MM-DD".
+
+        Returns:
+            The CIK as an unpadded digit string (e.g. "1326801"), or None.
+        """
+        try:
+            details = self.ticker_details(ticker, date=date)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
+        cik = details.get("cik")
+        return str(int(cik)) if cik else None
 
 
 class MassiveOptionsSource(MassiveSource, PolygonOptionsSource):

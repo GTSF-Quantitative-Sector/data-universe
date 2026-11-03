@@ -10,7 +10,7 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: current version is `"0.9.1"`.** The rule lapsed twice: 40 commits across 7
+**Status: current version is `"0.10.0"`.** The rule lapsed twice: 40 commits across 7
 implementation phases shipped before the first bump to `"0.2.0"`, and 0.4.0's disk-cache
 work then shipped without a bump being recorded here either. Follow the rule from here
 on — bump both on every merged change, not just when someone notices the drift.

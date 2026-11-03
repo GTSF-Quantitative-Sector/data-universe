@@ -2,10 +2,11 @@ from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+import requests
 
 from data_universe import config
 from data_universe.cache import reset_cache
-from data_universe.sources.base import RateLimitedError
+from data_universe.sources.base import DataSourceError, RateLimitedError
 from data_universe.sources.massive import TICKER_COLUMNS, MassiveSource
 
 
@@ -193,3 +194,58 @@ def test_inherited_429_retry_then_rate_limited_error(monkeypatch):
     source = MassiveSource(session=session, max_retries=2, backoff_seconds=0.01)
     with pytest.raises(RateLimitedError):
         source.list_tickers()
+
+
+# --- v0.10.0: ticker_details ?date= + as_of_cik ---------------------------------
+
+
+class _HttpErrorResponse(FakeResponse):
+    """raise_for_status that raises a real requests.HTTPError (with .response
+    set) like requests' own Response does -- needed for the 404 path."""
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(response=self)
+
+
+def test_ticker_details_sends_the_date_param():
+    session = Mock()
+    session.get.return_value = FakeResponse(200, {"results": {"cik": "0001326801"}})
+    MassiveSource(session=session).ticker_details("FB", date="2020-06-01")
+    args, kwargs = session.get.call_args
+    assert args[0] == "https://api.massive.com/v3/reference/tickers/FB"
+    assert kwargs["params"] == {"date": "2020-06-01"}
+
+
+def test_ticker_details_without_date_sends_no_params():
+    session = Mock()
+    session.get.return_value = FakeResponse(200, {"results": {"cik": "0000000001"}})
+    MassiveSource(session=session).ticker_details("AAPL")
+    assert session.get.call_args[1]["params"] is None
+
+
+def test_as_of_cik_returns_the_unpadded_cik():
+    session = Mock()
+    session.get.return_value = FakeResponse(200, {"results": {"cik": "0001326801"}})
+    assert MassiveSource(session=session).as_of_cik("FB", "2020-06-01") == "1326801"
+
+
+def test_as_of_cik_404_is_none():
+    session = Mock()
+    session.get.return_value = _HttpErrorResponse(404)
+    assert MassiveSource(session=session).as_of_cik("GOOGL", "2015-01-02") is None
+
+
+def test_as_of_cik_record_without_cik_is_none():
+    session = Mock()
+    session.get.return_value = FakeResponse(200, {"results": {"ticker": "X"}})
+    assert MassiveSource(session=session).as_of_cik("X", "2020-01-01") is None
+
+
+def test_as_of_cik_5xx_exhausts_retries_and_raises():
+    session = Mock()
+    session.get.return_value = FakeResponse(500)
+    source = MassiveSource(session=session, max_retries=1, backoff_seconds=0.0)
+    with pytest.raises(DataSourceError):
+        source.as_of_cik("AAA", "2020-01-01")
+    assert session.get.call_count == 2

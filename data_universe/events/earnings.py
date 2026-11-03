@@ -59,7 +59,7 @@ pre_straddle_price / pre_spot_raw`; `ret_reaction` is the total-return move
 from `pre_announcement_session`'s close to `reaction_session`'s;
 `surprise_ratio = |ret_reaction| / implied_move` only when `implied_move`
 is positive. `cik`/`cik_source` record where the filing CIK came from
-("explicit", "sec_current", or a `cik_resolver` label).
+("explicit", "massive_as_of", "sec_current", or a custom `cik_resolver` label).
 
 `build_pead_panel` builds the same table over a whole index: an event is
 kept iff `start <= event_date <= end` AND the ticker was a member at the
@@ -133,6 +133,18 @@ _SUE_HISTORY_DAYS = 1300
 # (ticker, as_of "YYYY-MM-DD") -> (cik, cik_source label), or None to fall
 # through to `edgar_source.get_cik(ticker)`.
 CikResolver = Callable[[str, str], Optional[Tuple[str, str]]]
+
+
+def massive_cik_resolver(source) -> CikResolver:
+    """A `CikResolver` backed by `source.as_of_cik` (Massive ticker details
+    `?date=`): `(cik, "massive_as_of")` for a hit, or None so the SEC current
+    map gets its usual turn. Recovers renamed tickers like FB (SEC's current
+    map has no "FB" at all -- OPEN_QUESTIONS.md item 24)."""
+    def resolve(ticker: str, as_of: str) -> Optional[Tuple[str, str]]:
+        cik = source.as_of_cik(ticker, as_of)
+        return (cik, "massive_as_of") if cik else None
+
+    return resolve
 
 
 @dataclass
@@ -251,9 +263,15 @@ def build_pead_panel(
     (label "explicit"), then `cik_resolver(ticker, as_of)` where `as_of` is
     `max(interval start, last session before `start`)` -- a resolver returning
     None falls through -- then `edgar_source.get_cik(ticker)` (label
-    "sec_current"). Each ticker's intervals are grouped by (cik, label); one
-    `build_pead_events` call per group, with that group's events kept only
-    inside that group's own intervals.
+    "sec_current"). When `cik_resolver` is None and the shared
+    `MassiveOptionsSource` default was constructed for the price/options
+    sources, `massive_cik_resolver` is used automatically (label
+    "massive_as_of") -- renamed tickers like FB resolve through ticker
+    details `?date=` instead of failing in the SEC current map. Passing
+    explicit price/options sources with no resolver keeps the SEC-only
+    behaviour; an explicit `cik_resolver` always wins. Each ticker's intervals
+    are grouped by (cik, label); one `build_pead_events` call per group, with
+    that group's events kept only inside that group's own intervals.
 
     Args:
         start: First event date, "YYYY-MM-DD" (inclusive).
@@ -268,7 +286,10 @@ def build_pead_panel(
             ticker with no candidate interval lands in `failed` (non-fatal).
         cik_overrides: `{ticker: cik}` used before any resolver/EDGAR lookup.
         cik_resolver: Optional `(ticker, as_of) -> (cik, label)` hook for
-            as-of-date CIK lookup (e.g. for renamed tickers).
+            as-of-date CIK lookup (e.g. for renamed tickers). Defaults to
+            `massive_cik_resolver` on the shared `MassiveOptionsSource` when
+            one is constructed (i.e. when price or options source was left at
+            its default).
         strict: Passed to the membership staleness check -- True raises
             `MembershipStaleError` instead of warning on stale tables.
         include_sue: When True, append the `SUE_EVENT_COLUMNS` to each kept
@@ -289,12 +310,17 @@ def build_pead_panel(
     if pd.Timestamp(start) > pd.Timestamp(end):
         raise ValueError(f"start {start!r} is after end {end!r}")
     edgar_source = edgar_source if edgar_source is not None else EdgarSource()
+    default_source = None
     if price_source is None or options_source is None:
-        massive = MassiveOptionsSource()
+        default_source = MassiveOptionsSource()
         if price_source is None:
-            price_source = massive
+            price_source = default_source
         if options_source is None:
-            options_source = massive
+            options_source = default_source
+    if cik_resolver is None and default_source is not None:
+        # ticker details `?date=` gives the as-of CIK (item 24); an explicit
+        # resolver always wins and explicit sources keep SEC-only behaviour.
+        cik_resolver = massive_cik_resolver(default_source)
 
     membership_grid._check_staleness(index_id, strict)
     ticker_intervals = membership_store.load_ticker_intervals(index_id)
