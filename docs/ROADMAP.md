@@ -24,9 +24,9 @@ behavior changes. Phase 2 shipped as v0.7.0. Phase 7a shipped as v0.8.0.
 
 Entitlement/shape probe (`python -m data_universe.probe`); true total-return bars plus
 raw bars (`sources/adjust.py`); the PEAD raw-strike fix; option chain filters and the
-expired/active union; `MassiveOptionsSource`; retries + `EntitlementError`; EDGAR
-throttle/retries/User-Agent. **Gated:** don't merge to `main` until the probe confirms
-`dividend_cash_basis` (`OPEN_QUESTIONS.md` item 20).
+expired/active union (replaced in v0.9.1 by one `expired=false` query); `MassiveOptionsSource`; retries + `EntitlementError`; EDGAR
+throttle/retries/User-Agent. **Gate satisfied:** the 2026-11-03 probe confirmed
+`dividend_cash_basis = "raw"` (`OPEN_QUESTIONS.md` item 20).
 
 ### Phase 2 — done (v0.7.0)
 
@@ -44,9 +44,8 @@ isolation, a `tickers` subset, `cik_overrides`, and the `cik_resolver` hook.
 **Not shipped:** the as-of CIK lookup itself — the `cik_resolver` hook is in place but
 unfilled until the probe's `fb_as_of_cik_is_meta`/ticker-events check confirms the
 endpoint (`OPEN_QUESTIONS.md` item 24); panel CIKs default to SEC's current map
-(`cik_source="sec_current"`). v0.7.0 stacks on v0.6.0 and inherits its merge gate —
-don't merge to `main` until the probe confirms `dividend_cash_basis`
-(`OPEN_QUESTIONS.md` item 20).
+(`cik_source="sec_current"`). The 2026-11-03 probe answered item 24 (ticker details
+`?date=`), so the resolver is now the next code step.
 
 ### Phase 3 — durable raw store + bulk ingest
 
@@ -96,9 +95,8 @@ as sparse top-N edges per snapshot; SIC codes as a stand-in for historical GICS.
   via `companyconcept`, plus `include_sue` on `build_pead_events`/`build_pead_panel`):
   first-reported quarterly diluted EPS keyed by the earliest `filed` date
   (restatements can't leak in); SUE = (EPS_q − EPS_{q−4}) / std of last 8 differences.
-  Same gate as everything else on this branch — don't merge before the probe confirms
-  the dividend basis; the probe's new `aapl_eps_concept` check verifies the
-  first-reported EPS assumption too.
+  The probe's `aapl_eps_concept` check confirmed the first-reported EPS assumption
+  on 2026-11-03.
 - **7b Benzinga earnings/estimates (if entitled):** announcement date/time, consensus
   and actual EPS — a surprise measure and an 8-K timing cross-check.
 - **7c Massive news:** daily article counts per ticker keyed by `published_utc`.
@@ -113,21 +111,33 @@ states with checkpoints.
 
 ## Immediate next steps (user actions)
 
-1. Merge v0.5.0 to `main`.
-2. Run `python -m data_universe.probe` with real keys and share the JSON — it resolves
-   `OPEN_QUESTIONS.md` items 4, 5, 10, 15, 20, 22 and 24 and scopes Phases 3–4 and 7,
-   plus Phase 2's `cik_resolver`; its `aapl_eps_concept` check verifies Phase 7a's
-   first-reported EPS basis.
-   If `dividend_cash_basis` comes back `split_adjusted`, flip
-   `adjust.DIVIDEND_CASH_BASIS` (the fakes follow automatically).
-3. **Don't merge v0.6.0 — or v0.7.0/v0.8.0, which stack on it — until the dividend
-   basis is confirmed** — a wrong basis is a silent error.
-4. Once the probe picks the as-of CIK endpoint, implement a `cik_resolver` for
-   `build_pead_panel` (`OPEN_QUESTIONS.md` item 24).
+The probe ran 2026-11-03 against the Massive host (report:
+`data/probe/probe_20261103T192344Z.json`, gitignored). Headline findings:
+
+- `dividend_cash_basis = "raw"` — matches `adjust.DIVIDEND_CASH_BASIS`; the
+  v0.6.0+ merge gate is **satisfied**.
+- `expired` on options contracts is relative to `as_of` (the empty-chain bug;
+  fixed in v0.9.1); strikes are raw; option open-close pricing works on 2019
+  contracts.
+- `adjusted=true` is split-only; hourly bars reach 2015 and minute bars work.
+- Aggregates are keyed by the symbol in use at the time (FB has 2020 bars,
+  META none); ticker details `?date=` gives the as-of CIK (Meta) — the
+  `cik_resolver` endpoint.
+- `I:VIX` is **not entitled** on this plan; SEC checks all pass including the
+  companyconcept first-reported finding; flat files need S3 creds and FRED
+  needs a key (both skipped).
+
+1. Merge v0.6.0+ (`v0.6.0` through `v0.9.1`) to `main`.
+2. Implement a `cik_resolver` for `build_pead_panel` on
+   `/v3/reference/tickers/{ticker}?date=` (`OPEN_QUESTIONS.md` item 24) — the
+   next code step.
+3. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
+   `pip install -e ".[s3]"` to cover the skipped groups.
+4. Set a real SEC User-Agent contact (the placeholder is polite but generic).
 
 ## Risks
 
-- Dividend cash basis is unverified — mitigated by one constant plus the probe gate.
+- Dividend cash basis confirmed `raw` by the 2026-11-03 probe; a new vendor would need the same check.
 - Each bars window costs 3 cached requests unless a `StoreBackedSource` (v0.9.0)
   wraps the source — then only the still-open tail and first-time ranges hit upstream.
 - Adjusted levels depend on the window by design; every current feature is

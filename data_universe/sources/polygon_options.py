@@ -8,7 +8,6 @@ flag in `OPEN_QUESTIONS.md` on options endpoints.
 """
 from __future__ import annotations
 
-import datetime as dt
 from typing import Optional
 
 import pandas as pd
@@ -18,11 +17,6 @@ from data_universe.cache import cached
 from data_universe.sources.polygon import PolygonSource
 
 _CONTRACT_COLUMNS = ["ticker", "expiration_date", "strike_price", "contract_type"]
-
-
-def _today() -> str:
-    """Today's UTC date, "YYYY-MM-DD" (a function so tests can pin it)."""
-    return dt.datetime.now(dt.timezone.utc).date().isoformat()
 
 
 class PolygonOptionsSource(PolygonSource):
@@ -47,10 +41,15 @@ class PolygonOptionsSource(PolygonSource):
         narrowed server-side by expiry/strike/type (a full chain for a liquid name is
         many pages; a filtered one is usually one).
 
-        Contracts that have since expired need `expired=true`, which excludes
-        contracts still listed today; so when the expiry window can reach today
-        (`expiration_lte` is None or >= today), a second `expired=false` query is
-        made and the two are unioned. See `OPEN_QUESTIONS.md` item 22.
+        `expired` on the contracts endpoint is evaluated RELATIVE TO `as_of`,
+        not today -- confirmed live 2026-11-03 (AAPL, as_of=2019-07-01,
+        expiration 2019-07-02..2019-07-19, strikes 191..212: `expired=true`
+        returned 0 contracts, `expired=false` 48, `expired` omitted 48). The
+        as-of chain is therefore the `expired=false` result: contracts listed
+        and unexpired on `as_of_date`, so one query serves historical and
+        current windows alike. A contract expiring ON `as_of_date` may be
+        classed expired (unverified; PEAD never needs it -- its expiries are
+        strictly after day0). See `OPEN_QUESTIONS.md` item 22.
 
         Args:
             underlying: Underlying ticker symbol.
@@ -76,9 +75,7 @@ class PolygonOptionsSource(PolygonSource):
             "contract_type": contract_type,
         }
         params.update({k: v for k, v in filters.items() if v is not None})
-        rows = self._paginate(url, {**params, "expired": "true"})
-        if expiration_lte is None or expiration_lte >= _today():
-            rows += self._paginate(url, {**params, "expired": "false"})
+        rows = self._paginate(url, {**params, "expired": "false"})
         if not rows:
             return pd.DataFrame(columns=_CONTRACT_COLUMNS)
         frame = pd.DataFrame(

@@ -79,7 +79,7 @@ def test_contracts_as_of_follows_next_url_pagination():
     session = Mock()
     session.get.side_effect = [page1, page2]
     source = PolygonOptionsSource(session=session)
-    # A past expiry window -> one (expired=true) query, so exactly the two pages.
+    # One expired=false query (expired is relative to as_of), two pages.
     chain = source.contracts_as_of("AAPL", "2024-01-02", expiration_lte="2024-07-01")
     assert len(chain) == 2
     assert session.get.call_count == 2
@@ -145,8 +145,9 @@ def test_repeat_call_is_served_from_cache():
 # --- v0.6.0: filters, expired/active union, host -----------------------------------
 
 
-def test_contracts_as_of_sends_only_the_given_filters(monkeypatch):
-    monkeypatch.setattr("data_universe.sources.polygon_options._today", lambda: "2026-10-26")
+def test_contracts_as_of_sends_only_the_given_filters():
+    # expired is relative to as_of (confirmed live 2026-11-03): the as-of
+    # chain is always the single expired=false query, no matter the window.
     session = Mock()
     session.get.return_value = FakeResponse({"results": []})
     PolygonOptionsSource(session=session).contracts_as_of(
@@ -159,29 +160,21 @@ def test_contracts_as_of_sends_only_the_given_filters(monkeypatch):
     assert params["expiration_date.lte"] == "2019-08-10"
     assert params["strike_price.gte"] == 160.0
     assert params["strike_price.lte"] == 240.0
-    assert params["expired"] == "true"
+    assert params["expired"] == "false"
     assert "contract_type" not in params
 
 
-def test_window_reaching_today_also_queries_unexpired_and_dedupes(monkeypatch):
-    monkeypatch.setattr("data_universe.sources.polygon_options._today", lambda: "2026-10-26")
-    expired = _contract("O:AAPL261023C00190000", "2026-10-23", 190.0, "call")
-    listed = _contract("O:AAPL261120C00190000", "2026-11-20", 190.0, "call")
-
-    def get(url, params=None, headers=None, timeout=None):
-        if params["expired"] == "true":
-            return FakeResponse({"results": [expired]})
-        return FakeResponse({"results": [listed, expired]})
-
+def test_contracts_as_of_is_one_expired_false_query_and_dedupes():
+    first = _contract("O:AAPL261023C00190000", "2026-10-23", 190.0, "call")
+    second = _contract("O:AAPL261120C00190000", "2026-11-20", 190.0, "call")
     session = Mock()
-    session.get.side_effect = get
+    session.get.return_value = FakeResponse({"results": [first, second, first]})
     chain = PolygonOptionsSource(session=session).contracts_as_of(
         "AAPL", "2026-10-20", expiration_lte="2026-11-30"
     )
-    assert sorted(c[1]["params"]["expired"] for c in session.get.call_args_list) == [
-        "false", "true",
-    ]
-    assert chain["ticker"].tolist() == [expired["ticker"], listed["ticker"]]
+    assert session.get.call_count == 1
+    assert session.get.call_args[1]["params"]["expired"] == "false"
+    assert chain["ticker"].tolist() == [first["ticker"], second["ticker"]]
 
 
 def test_massive_options_source_uses_the_massive_host():

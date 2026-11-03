@@ -1,6 +1,6 @@
 from setuptools import setup
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 DESCRIPTION = "GTSF Quant Sector shared data and feature library."
 
 setup(

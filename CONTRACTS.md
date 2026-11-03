@@ -116,8 +116,8 @@ The ATM straddle is chosen with `spot` = the **raw** day-0 close — historical 
 strikes are on the raw (as-traded) basis, so a split-adjusted spot would pick the wrong
 strike for any event preceding a later split. The chain query itself is filtered
 server-side: expirations in `(day0, day0 + 40]` days and strikes within ±20% of spot
-(`PolygonOptionsSource.contracts_as_of`'s `expiration_*`/`strike_*` params), with an
-`expired`+`active` union when the window can reach today. The pre-announcement
+(`PolygonOptionsSource.contracts_as_of`'s `expiration_*`/`strike_*` params), as a
+single `expired=false` query (the flag is relative to `as_of` — confirmed 2026-11-03). The pre-announcement
 straddle runs the same selection through one shared helper, just priced and
 chain-fetched at `pre_announcement_session` with its strike band around
 `pre_spot_raw`.
@@ -393,7 +393,8 @@ never interpolated into a URL, never logged.
   registered (satisfying "provide interfaces and stubs") but unusable for a non-SPY ticker
   until IV30 lands.
 - **`I:VIX` indices access** — `iv_index`'s SPY path depends on Polygon indices-aggregates
-  entitlement, which is unconfirmed. See `OPEN_QUESTIONS.md` item 4.
+  entitlement, which the 2026-11-03 probe found is **not** on the current plan (HTTP 403),
+  so it raises `EntitlementError`. See `OPEN_QUESTIONS.md` item 4.
 
 See [`OPEN_QUESTIONS.md`](OPEN_QUESTIONS.md) for the full list of unresolved assumptions
 behind every schema above.

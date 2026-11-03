@@ -186,6 +186,21 @@ def nearest_call(contracts, spot: float) -> Optional[str]:
     return min(calls, key=lambda c: abs(float(c["strike_price"]) - spot))["ticker"]
 
 
+def expired_relative_finding(false_rows, true_rows, answered: bool) -> dict:
+    """Is `expired` on the contracts endpoint relative to `as_of`? With an
+    as-of in the past, `expired=true` returns no contracts while
+    `expired=false` returns the ones live on that date (confirmed live
+    2026-11-03). `answered` is False unless both checks returned ok/empty."""
+    true_n = len(true_rows or [])
+    false_n = len(false_rows or [])
+    value = (true_n == 0 and false_n > 0) if answered else None
+    return {
+        "value": value,
+        "expired_true_rows": true_n,
+        "expired_false_rows": false_n,
+    }
+
+
 def fb_cik_finding(details) -> dict:
     """Does `/v3/reference/tickers/FB?date=2020-06-01` resolve to Meta's CIK?"""
     cik = (details or {}).get("cik")
@@ -376,17 +391,35 @@ class Probe:
     def run_options(self):
         g = "options"
         self._aggs("aapl_daily_raw_2019", g, "AAPL", "day", "2019-07-01", "2019-07-01", False)
+        contract_params = {
+            "underlying_ticker": "AAPL",
+            "as_of": "2019-07-01",
+            "expiration_date.gte": "2019-07-02",
+            "expiration_date.lte": "2019-08-16",
+            "limit": 1000,
+        }
         self.vendor(
             "aapl_contracts_as_of_2019",
             g,
             "/v3/reference/options/contracts",
-            {
-                "underlying_ticker": "AAPL",
-                "as_of": "2019-07-01",
-                "expired": "true",
-                "expiration_date.lte": "2019-08-16",
-                "limit": 1000,
-            },
+            {**contract_params, "expired": "false"},
+        )
+        self.vendor(
+            "aapl_contracts_expired_true_2019",
+            g,
+            "/v3/reference/options/contracts",
+            {**contract_params, "expired": "true"},
+        )
+        statuses = {r.check: r.status for r in self.results}
+        self._attach(
+            "aapl_contracts_as_of_2019",
+            "expired_is_relative_to_as_of",
+            expired_relative_finding(
+                self.results_of("aapl_contracts_as_of_2019"),
+                self.results_of("aapl_contracts_expired_true_2019"),
+                statuses.get("aapl_contracts_as_of_2019") in ("ok", "empty")
+                and statuses.get("aapl_contracts_expired_true_2019") in ("ok", "empty"),
+            ),
         )
         raw_close = closes_by_date(self.results_of("aapl_daily_raw_2019")).get("2019-07-01")
         contracts = self.results_of("aapl_contracts_as_of_2019")

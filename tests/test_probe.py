@@ -44,8 +44,15 @@ def _router(routes):
     """`routes`: list of (substring, adjusted-or-None, response). First match wins."""
 
     def get(url, params=None, headers=None, timeout=None):
-        for needle, adjusted, response in routes:
-            if needle in url and (adjusted is None or (params or {}).get("adjusted") == adjusted):
+        for needle, match, response in routes:
+            if needle not in url:
+                continue
+            if match is None:
+                return response
+            if isinstance(match, dict):
+                if all((params or {}).get(k) == v for k, v in match.items()):
+                    return response
+            elif (params or {}).get("adjusted") == match:
                 return response
         return FakeResponse(404)
 
@@ -142,6 +149,18 @@ def test_eps_first_reported_finding_true_and_false():
     assert probe.eps_first_reported_finding(None)["value"] is False
 
 
+def test_expired_relative_finding_true_false_and_none():
+    call = {"ticker": "O:X"}
+    finding = probe.expired_relative_finding([call, call], [], True)
+    assert finding["value"] is True
+    assert finding["expired_false_rows"] == 2 and finding["expired_true_rows"] == 0
+    assert probe.expired_relative_finding([call], [call], True)["value"] is False
+    assert probe.expired_relative_finding([], [], True)["value"] is False
+    none_finding = probe.expired_relative_finding(None, [call], False)
+    assert none_finding["value"] is None
+    assert none_finding["expired_true_rows"] == 1 and none_finding["expired_false_rows"] == 0
+
+
 def test_fb_cik_finding():
     assert probe.fb_cik_finding({"cik": "0001326801"})["value"] is True
     assert probe.fb_cik_finding({"cik": "0000000001"})["value"] is False
@@ -177,10 +196,13 @@ def _vendor_routes():
         ("/v3/reference/tickers/FB", None,
          FakeResponse(200, {"results": {"cik": "0001326801", "name": "Meta Platforms"}})),
         ("/v3/reference/tickers/AAPL", None, FakeResponse(200, {"results": {"cik": "0000320193"}})),
-        ("/v3/reference/options/contracts", None, FakeResponse(200, {"results": [
+        ("/v3/reference/options/contracts", {"expired": "false"},
+         FakeResponse(200, {"results": [
             {"ticker": "O:AAPL190719C00200000", "strike_price": 200.0, "contract_type": "call"},
             {"ticker": "O:AAPL190719P00200000", "strike_price": 200.0, "contract_type": "put"},
         ]})),
+        ("/v3/reference/options/contracts", {"expired": "true"},
+         FakeResponse(200, {"results": []})),
         ("/v1/open-close/O:AAPL190719C00200000/2019-07-01", None,
          FakeResponse(200, {"close": 5.1, "volume": 100})),
         ("/v2/reference/news", None, FakeResponse(200, {"results": [{"id": "x"}]})),
@@ -223,6 +245,13 @@ def test_full_run_statuses_and_findings():
     assert checks["fb_ticker_details_2020"]["findings"]["fb_as_of_cik_is_meta"]["value"] is True
     strikes = checks["aapl_contracts_as_of_2019"]["findings"]["options_strikes_are_raw"]
     assert strikes["value"] is True
+    expired_finding = checks["aapl_contracts_as_of_2019"]["findings"][
+        "expired_is_relative_to_as_of"
+    ]
+    assert expired_finding["value"] is True
+    assert expired_finding["expired_true_rows"] == 0
+    assert expired_finding["expired_false_rows"] == 2
+    assert checks["aapl_contracts_expired_true_2019"]["status"] == "empty"
     assert checks["option_open_close"]["status"] == "ok"
     assert checks["option_open_close"]["endpoint"] == "/v1/open-close/{contract}/2019-07-01"
     assert checks["aapl_companyfacts"]["findings"]["diluted_eps_has_filed_dates"]["value"]
