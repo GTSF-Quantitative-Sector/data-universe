@@ -262,3 +262,81 @@ def test_throttle_spaces_requests_process_wide(monkeypatch):
     edgar._throttle()
     edgar._throttle()
     assert sleeps == pytest.approx([0.10, 0.11])
+
+
+# --- v0.8.0: XBRL companyconcept --------------------------------------------------
+
+_EPS_ENTRIES = [
+    {"start": "2019-06-30", "end": "2019-09-28", "val": 0.55, "accn": "a1",
+     "fy": 2019, "fp": "Q4", "form": "10-Q", "filed": "2019-07-31",
+     "frame": "CY2019Q3"},
+]
+
+
+def _concept(entries, extra_units=None):
+    units = {"USD/shares": entries}
+    units.update(extra_units or {})
+    return {"cik": 320193, "taxonomy": "us-gaap",
+            "tag": "EarningsPerShareDiluted", "units": units}
+
+
+def test_company_concept_url_and_user_agent():
+    session = Mock()
+    session.get.return_value = FakeResponse(_concept(_EPS_ENTRIES))
+    source = EdgarSource(session=session, user_agent="org me@example.org")
+    source.company_concept("320193", "EarningsPerShareDiluted")
+    url, kwargs = session.get.call_args
+    assert url[0] == (
+        "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/"
+        "us-gaap/EarningsPerShareDiluted.json"
+    )
+    assert kwargs["headers"]["User-Agent"] == "org me@example.org"
+
+
+def test_company_concept_parses_dtypes_and_ignores_other_units():
+    session = Mock()
+    session.get.return_value = FakeResponse(
+        _concept(_EPS_ENTRIES, {"USD": _EPS_ENTRIES, "shares": _EPS_ENTRIES})
+    )
+    frame = EdgarSource(session=session).company_concept(
+        "320193", "EarningsPerShareDiluted"
+    )
+    assert len(frame) == 1
+    row = frame.iloc[0]
+    assert row["start"] == pd.Timestamp("2019-06-30")
+    assert row["end"] == pd.Timestamp("2019-09-28")
+    assert row["filed"] == pd.Timestamp("2019-07-31")
+    assert row["val"] == 0.55
+    assert row["fy"] == 2019
+    assert row["accn"] == "a1"
+    assert str(frame["fy"].dtype) == "Int64"
+    assert str(frame["filed"].dtype) == "datetime64[ns]"
+
+
+def test_company_concept_404_is_an_empty_typed_frame():
+    session = Mock()
+    session.get.return_value = FakeResponse({}, status_code=404)
+    frame = EdgarSource(session=session).company_concept(
+        "1", "EarningsPerShareDiluted"
+    )
+    assert frame.empty
+    assert list(frame.columns) == edgar.CONCEPT_COLUMNS
+    assert str(frame["filed"].dtype) == "datetime64[ns]"
+    assert str(frame["fy"].dtype) == "Int64"
+
+
+def test_company_concept_is_cached():
+    session = Mock()
+    session.get.return_value = FakeResponse(_concept(_EPS_ENTRIES))
+    source = EdgarSource(session=session)
+    source.company_concept("320193", "EarningsPerShareDiluted")
+    source.company_concept("320193", "EarningsPerShareDiluted")
+    assert session.get.call_count == 1
+
+
+def test_company_concept_403_raises_data_source_error():
+    session = Mock()
+    session.get.return_value = FakeResponse({}, status_code=403)
+    source = EdgarSource(session=session, user_agent="org me@example.org")
+    with pytest.raises(DataSourceError, match="User-Agent"):
+        source.company_concept("1", "EarningsPerShareDiluted")

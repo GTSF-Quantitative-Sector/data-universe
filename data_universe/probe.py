@@ -196,6 +196,40 @@ def fb_cik_finding(details) -> dict:
     return {"value": value, "cik": cik, "name": (details or {}).get("name")}
 
 
+def eps_first_reported_finding(payload) -> dict:
+    """Does the companyconcept endpoint carry first-reported (as-filed) EPS
+    values? Uses AAPL's FY2019 diluted EPS: first reported as 11.89 (filed
+    2019-10-31), re-reported as 2.97 in the FY2021 10-K after the 2020 4:1
+    split. A missing or odd payload yields `value` False, never an exception.
+    """
+    out = {"value": False, "expected_first": 11.89, "expected_restated": 2.97}
+    try:
+        entries = (payload or {}).get("units", {}).get("USD/shares", []) or []
+        candidates = [
+            e
+            for e in entries
+            if e.get("end") == "2019-09-28"
+            and (pd.Timestamp(e.get("end")) - pd.Timestamp(e.get("start"))).days >= 340
+        ]
+        if not candidates:
+            return out
+        first = min(candidates, key=lambda e: e.get("filed") or "")
+        first_filed = first.get("filed") or ""
+        later = sorted(
+            {e.get("val") for e in candidates if (e.get("filed") or "") > first_filed}
+        )
+        out["first_reported"] = first.get("val")
+        out["first_filed"] = first_filed
+        out["later_values"] = later
+        out["restated_present"] = any(
+            abs(float(v) - 2.97) < 0.005 for v in later
+        )
+        out["value"] = abs(float(first["val"]) - 11.89) < 0.005
+    except Exception:
+        out["value"] = False
+    return out
+
+
 # --- runner ---------------------------------------------------------------------------
 
 
@@ -448,6 +482,22 @@ class Probe:
             "value": bool(eps) and all("filed" in e for e in eps),
             "n_facts": len(eps),
         })
+        self._http(
+            "aapl_eps_concept",
+            g,
+            "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/"
+            "EarningsPerShareDiluted.json",
+            "/api/xbrl/companyconcept/CIK##########/us-gaap/EarningsPerShareDiluted.json",
+            None,
+            headers,
+            True,
+            edgar._throttle,
+        )
+        self._attach(
+            "aapl_eps_concept",
+            "first_reported_is_as_filed",
+            eps_first_reported_finding(self.payloads.get("aapl_eps_concept")),
+        )
 
     def run_fred(self):
         g = "fred"

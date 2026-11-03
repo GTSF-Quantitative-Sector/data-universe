@@ -125,6 +125,23 @@ def test_strikes_raw_finding_and_nearest_call():
     assert probe.nearest_call(contracts, 204.0) == "O:A2"
 
 
+def test_eps_first_reported_finding_true_and_false():
+    payload = {"units": {"USD/shares": [
+        {"start": "2018-09-30", "end": "2019-09-28", "val": 11.89,
+         "filed": "2019-10-31"},
+        {"start": "2018-09-30", "end": "2019-09-28", "val": 2.97,
+         "filed": "2021-10-29"},
+    ]}}
+    finding = probe.eps_first_reported_finding(payload)
+    assert finding["value"] is True
+    assert finding["restated_present"] is True
+    assert finding["first_reported"] == 11.89
+    payload["units"]["USD/shares"][0]["val"] = 12.5
+    assert probe.eps_first_reported_finding(payload)["value"] is False
+    assert probe.eps_first_reported_finding({})["value"] is False
+    assert probe.eps_first_reported_finding(None)["value"] is False
+
+
 def test_fb_cik_finding():
     assert probe.fb_cik_finding({"cik": "0001326801"})["value"] is True
     assert probe.fb_cik_finding({"cik": "0000000001"})["value"] is False
@@ -168,6 +185,14 @@ def _vendor_routes():
          FakeResponse(200, {"close": 5.1, "volume": 100})),
         ("/v2/reference/news", None, FakeResponse(200, {"results": [{"id": "x"}]})),
         ("data.sec.gov/submissions/", None, FakeResponse(200, {"cik": "320193"})),
+        ("companyconcept", None, FakeResponse(200, {"units": {"USD/shares": [
+            {"start": "2018-09-30", "end": "2019-09-28", "val": 11.89,
+             "accn": "a", "fy": 2019, "fp": "FY", "form": "10-K",
+             "filed": "2019-10-31", "frame": "CY2019"},
+            {"start": "2018-09-30", "end": "2019-09-28", "val": 2.97,
+             "accn": "b", "fy": 2021, "fp": "FY", "form": "10-K",
+             "filed": "2021-10-29", "frame": "CY2019"},
+        ]}})),
         ("companyfacts", None, FakeResponse(200, {"facts": {"us-gaap": {
             "EarningsPerShareDiluted": {"units": {"USD/shares": [
                 {"val": 1.5, "filed": "2024-08-02"}]}}}}})),
@@ -201,6 +226,10 @@ def test_full_run_statuses_and_findings():
     assert checks["option_open_close"]["status"] == "ok"
     assert checks["option_open_close"]["endpoint"] == "/v1/open-close/{contract}/2019-07-01"
     assert checks["aapl_companyfacts"]["findings"]["diluted_eps_has_filed_dates"]["value"]
+    assert checks["aapl_eps_concept"]["status"] == "ok"
+    finding = checks["aapl_eps_concept"]["findings"]["first_reported_is_as_filed"]
+    assert finding["value"] is True
+    assert finding["restated_present"] is True
     assert checks["aapl_news"]["status"] == "ok"
     assert report["summary"]["ok"] >= 10
 

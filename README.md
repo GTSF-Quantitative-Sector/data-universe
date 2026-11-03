@@ -95,6 +95,17 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
 - **`labels/`** — the same registry shape (`registry.py`, `LABEL_REGISTRY`), enforcing that
   every name starts with `fwd_`, and 3 concrete labels in `library.py`: `fwd_rv_cc_21d`,
   `fwd_vrp_expost`, `fwd_ret_15d`.
+- **`fundamentals/sue.py`** — `quarterly_sue(ticker, cik, edgar_source, price_source)`:
+  point-in-time quarterly EPS and SUE from SEC XBRL `companyconcept` facts
+  (first-reported only, split-rescaled to each quarter's own basis, derived Q4s).
+  `attach_sue(events, quarters)` matches events to their latest reported
+  quarter, and `build_pead_events`/`build_pead_panel` do it for you with
+  `include_sue=True`:
+  ```python
+  from data_universe.events import earnings
+  panel = earnings.build_pead_panel("2024-01-01", "2024-06-01", include_sue=True)
+  panel.events[["ticker", "event_date", "sue", "eps_yoy_diff"]]
+  ```
 - **`events/earnings.py`** — `build_pead_events(...)`: one row per qualifying 8-K Item 2.02
   filing, combining `EdgarSource`, price bars, and the options chain into the PEAD event
   table — v0.7.0 appends the v2 columns (ET acceptance time and announce timing,

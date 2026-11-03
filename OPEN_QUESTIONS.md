@@ -2,10 +2,11 @@
 
 Every unverified assumption and known implementation gap in this repo, consolidated in one
 place. Numbers match `PLAN.md` §9 where that section already numbered an item, so
-cross-references from code docstrings stay stable. Items 11-25 are new gaps discovered
+cross-references from code docstrings stay stable. Items 11-29 are new gaps discovered
 during implementation, not present in `PLAN.md` §9. Items 4, 5, 10, 15, 20 and 22 are all
 answered by `python -m data_universe.probe` (v0.6.0) — one opt-in run with real keys;
-item 24's endpoint choice is too.
+item 24's endpoint choice is too, and v0.8.0's `first_reported_is_as_filed` finding
+confirms the companyconcept basis assumption.
 
 | # | Question | Why it matters | Current stance | Owner / next step |
 |---|---|---|---|---|
@@ -36,6 +37,10 @@ item 24's endpoint choice is too.
 | 23 | What are the exact paths for the Phase 7 datasets? | Benzinga earnings/estimates, short interest, short volume, Treasury yields and related companies are wanted (`docs/ROADMAP.md` Phase 7) but their Massive REST paths are unconfirmed — guessing them into the probe would report meaningless 404s. | Only long-documented paths are probed today (`/v2/reference/news` is the sole new-data check). Each future check must carry a `doc_url` confirming its path first. | Confirm each path in Massive's REST docs, then add checks to `probe.py` `run_newdata`. |
 | 24 | Which endpoint gives the as-of CIK for a renamed ticker — Massive ticker details `?date=` or ticker events? | `build_pead_panel` resolves CIKs through SEC's *current* ticker→CIK map (`cik_source="sec_current"`), so a reused ticker can get a different company's filings attached (e.g. DOW, T). Interval filtering limits this but doesn't eliminate it. | The `cik_resolver` hook on `build_pead_panel` is in place (v0.7.0) — `(ticker, as_of) -> (cik, label)` per interval — but no resolver is implemented yet. | Run `python -m data_universe.probe`: the `fb_as_of_cik_is_meta` finding (ticker details `?date=`) and the `meta_ticker_events` check pick the endpoint, then implement the resolver. |
 | 25 | How should early-close (half-day) sessions be handled in `announce_timing`? | `announce_timing` buckets by the regular 16:00 close, so a filing between a 13:00 early close and 16:00 is classed `market_hours` with `reaction_session` = that same day — even though that day's close preceded the news. | Rare and not handled: the regular-hours clock is used for every date. | Revisit if a project cares — would need an early-close calendar, which the SPY-bars session index doesn't encode. |
+| 26 | Is this SUE definition the one the PEAD team wants? | No drift term; prior 8 quarterly diffs, excluding the current one; sample std (ddof=1); minimum 6 observations. | The components are all exposed (`eps_yoy_diff`, `sue_std`, `sue_n`) so variants can be recomputed — Novy-Marx includes the current quarter in the std; FOS/Bernard-Thomas subtract a drift. | PEAD team to confirm the definition; recompute from the columns if it differs. |
+| 27 | Is raw ÷ split-adjusted close at the filing date the right split basis for XBRL EPS? | Bars are fetched by the *current* symbol: a renamed ticker (FB→META — if the vendor keys aggregates by symbol at the time, which is unverified) has no factor before the rename, so those values are NaN (never wrong); a reused symbol could supply another company's factors. | Factors are `raw/split_adjusted` close at the filing date (product of split ratios effective strictly after it — a split on or before the filing date counts as already reflected, matching ASC 260). | Phase 4's (security, date) → vendor-symbol map fixes both cases. |
+| 28 | How wrong is a derived Q4? | `FY − (Q1+Q2+Q3)` is approximate: EPS isn't additive (share count and rounding move between periods). | Only derived when no direct Q4 exists, and flagged by `derived`/`eps_derived`. | Flag only — consumers can drop `eps_derived` rows. |
+| 29 | How does XBRL timing compare with announcement timing? | `eps_filed` is the first XBRL filing — usually days to weeks after the 8-K press release that first made the EPS public; the event match uses a 100-day lookback with a 7-day `filed` slack. 2009–2011 phase-in values can first appear as next-year comparatives; only us-gaap `USD/shares` tags are read, so IFRS filers get nothing. | `attach_sue` matches the latest quarter ending within 100 days before the event and filed no earlier than 7 days before it (usually after). | For strict XBRL point-in-time, filter on `eps_filed <= <entry session>` downstream. |
 
 See [`CONTRACTS.md`](CONTRACTS.md) for the schemas these assumptions feed into, and
 [`MAINTENANCE.md`](MAINTENANCE.md) for the recurring-task side of items 1, 12, and 13.

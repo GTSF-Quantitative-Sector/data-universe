@@ -7,6 +7,7 @@ import pytest
 
 from data_universe import config
 from data_universe.events.earnings import EVENT_COLUMNS, build_pead_panel
+from data_universe.fundamentals.sue import SUE_EVENT_COLUMNS
 from data_universe.membership import store
 from data_universe.membership.errors import (
     MembershipError,
@@ -15,6 +16,7 @@ from data_universe.membership.errors import (
 )
 from data_universe.membership.schema import TICKER_INTERVALS_COLUMNS
 from data_universe.sources.base import DataSourceError
+from data_universe.sources.edgar import CONCEPT_COLUMNS
 from data_universe.sources.fakes import FakePolygonSource
 from tests.test_events_earnings import FakeOptionsSource
 
@@ -337,3 +339,107 @@ def test_panel_events_carry_the_v2_columns(tmp_path):
     assert row["pre_announcement_session"] == pd.Timestamp("2024-05-01")
     assert np.isfinite(row["implied_move"])
     assert row["cik_source"] == "sec_current"
+
+
+# --- v0.8.0: include_sue --------------------------------------------------------
+
+def _fact(end, val, filed, start=None):
+    start = start or (pd.Timestamp(end) - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+    return {
+        "start": start, "end": end, "val": val, "accn": "a", "fy": None,
+        "fp": None, "form": "10-Q", "filed": filed, "frame": None,
+    }
+
+
+class EdgarWithConcept(FakeEdgarSource):
+    """The panel EDGAR fake plus a `company_concept`, keyed by CIK."""
+
+    def __init__(self, cik_by_ticker, filings_by_cik, facts_by_cik=None,
+                 raise_ciks=None):
+        super().__init__(cik_by_ticker, filings_by_cik)
+        self._facts = facts_by_cik or {}
+        self._raise_ciks = {str(int(c)) for c in (raise_ciks or set())}
+
+    def company_concept(self, cik, tag, unit="USD/shares", taxonomy="us-gaap"):
+        if str(int(cik)) in self._raise_ciks:
+            raise DataSourceError(f"boom {cik}")
+        facts = self._facts.get(str(int(cik)), {}).get(tag, [])
+        frame = pd.DataFrame([dict(e) for e in facts], columns=CONCEPT_COLUMNS)
+        for column in ("start", "end", "filed"):
+            frame[column] = pd.to_datetime(frame[column])
+        frame["val"] = frame["val"].astype("float64")
+        frame["fy"] = frame["fy"].astype("Int64")
+        return frame.sort_values(
+            ["filed", "end", "accn"], na_position="last"
+        ).reset_index(drop=True)
+
+
+_SUE_FACTS = {
+    "1111111": {
+        "EarningsPerShareDiluted": [_fact("2024-03-31", 1.5, "2024-05-05")],
+    },
+}
+
+
+def test_panel_include_sue_appends_columns_and_matches(tmp_path):
+    edgar = EdgarWithConcept(
+        {"AAA": "1111111"},
+        {"1111111": ["2024-05-02T19:15:00.000Z"]},
+        facts_by_cik=_SUE_FACTS,
+    )
+    _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
+    report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
+    assert list(report.events.columns) == EVENT_COLUMNS + SUE_EVENT_COLUMNS
+    assert report.sue_failed == {}
+    row = report.events.iloc[0]
+    assert row["eps_period_end"] == pd.Timestamp("2024-03-31")
+    assert row["eps_filed"] == pd.Timestamp("2024-05-05")
+    assert row["eps_diluted"] == 1.5
+    assert str(report.events["eps_derived"].dtype) == "boolean"
+    assert str(report.events["sue_n"].dtype) == "Int64"
+
+
+def test_panel_include_sue_failure_keeps_events_and_records_it(tmp_path):
+    edgar = EdgarWithConcept(
+        {"AAA": "1111111", "EEE": "6666666"},
+        {
+            "1111111": ["2024-05-02T19:15:00.000Z"],
+            "6666666": ["2024-05-02T19:15:00.000Z"],
+        },
+        facts_by_cik=_SUE_FACTS,
+        raise_ciks={"6666666"},
+    )
+    _save_tables(
+        tmp_path,
+        [[INDEX, "AAA", "2023-01-01", None], [INDEX, "EEE", "2023-01-01", None]],
+    )
+    report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
+    assert report.succeeded == {"AAA": 1, "EEE": 1}
+    assert report.sue_failed == {"EEE": "DataSourceError: boom 6666666"}
+    eee = report.events[report.events["ticker"] == "EEE"].iloc[0]
+    assert np.isnan(eee["sue"])
+    assert pd.isna(eee["eps_period_end"])
+    aaa = report.events[report.events["ticker"] == "AAA"].iloc[0]
+    assert aaa["eps_diluted"] == 1.5
+
+
+def test_panel_without_include_sue_has_exact_event_columns(tmp_path):
+    edgar = EdgarWithConcept(
+        {"AAA": "1111111"},
+        {"1111111": ["2024-05-02T19:15:00.000Z"]},
+        facts_by_cik=_SUE_FACTS,
+    )
+    _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
+    report = _panel("2024-01-01", "2024-06-01", edgar)
+    assert list(report.events.columns) == EVENT_COLUMNS
+    assert report.sue_failed == {}
+
+
+def test_empty_panel_with_include_sue_has_all_columns(tmp_path):
+    edgar = EdgarWithConcept({"AAA": "1111111"}, {})
+    _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
+    report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
+    assert report.events.empty
+    assert list(report.events.columns) == EVENT_COLUMNS + SUE_EVENT_COLUMNS
+    assert str(report.events["sue_n"].dtype) == "Int64"
+    assert str(report.events["eps_derived"].dtype) == "boolean"

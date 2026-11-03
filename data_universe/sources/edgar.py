@@ -1,5 +1,5 @@
 """EDGAR 8-K Item 2.02 (Results of Operations) earnings-announcement dates,
-and ticker-to-CIK lookup.
+ticker-to-CIK lookup, and XBRL company-concept facts.
 
 Uses SEC's per-company submissions JSON
 (`https://data.sec.gov/submissions/CIK##########.json`). Its
@@ -26,6 +26,18 @@ to a placeholder User-Agent or a rate-limit violation -- is raised at once.
 The User-Agent is the constructor argument, else `config.get_user_agent()`
 (env `DATA_UNIVERSE_USER_AGENT`), else a placeholder that triggers a one-time
 warning.
+
+XBRL company-concept facts use SEC's per-company endpoint
+(`https://data.sec.gov/api/xbrl/companyconcept/CIK##########/{taxonomy}/{tag}.json`):
+`units[unit]` holds one entry per FILING that disclosed the fact for a period --
+the same (start, end) appears once per disclosing filing (original report,
+next year's comparative, amendment, recast), each with its own `accn`/`filed`,
+and `fy`/`fp` are the filing's fiscal focus, not the fact's period. Values are
+on the share basis AT FILING TIME, so a later-split filing restates earlier
+numbers -- consumers must pick the earliest `filed` per period and rescale.
+The sibling `frames` API is never used here: it returns the latest-filed
+(restated) value, which is lookahead. A 404 (the company never reported the
+tag) returns an empty frame, not an error.
 """
 from __future__ import annotations
 
@@ -45,7 +57,9 @@ from data_universe.sources.http import get_with_retries, url_path
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:0>10}.json"
 _SUBMISSIONS_FILES_URL = "https://data.sec.gov/submissions/{name}"
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+_CONCEPT_URL = "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:0>10}/{taxonomy}/{tag}.json"
 _EARNINGS_COLUMNS = ["filing_date", "acceptance_datetime", "form", "items"]
+CONCEPT_COLUMNS = ["start", "end", "val", "accn", "fy", "fp", "form", "filed", "frame"]
 PLACEHOLDER_USER_AGENT = "data_universe (contact: gtsf-quant@example.org)"
 
 _SEC_MIN_INTERVAL_SECONDS = 0.11
@@ -139,7 +153,7 @@ class EdgarSource:
             )
         return PLACEHOLDER_USER_AGENT
 
-    def _get(self, url: str) -> dict:
+    def _get(self, url: str, missing_ok: bool = False) -> Optional[dict]:
         response = get_with_retries(
             self._session,
             url,
@@ -149,6 +163,8 @@ class EdgarSource:
             backoff_seconds=self._backoff_seconds,
             throttle=_throttle,
         )
+        if missing_ok and response.status_code == 404:
+            return None
         if response.status_code == 403:
             raise DataSourceError(
                 f"SEC EDGAR returned 403 for {url_path(url)} -- usually a missing or "
@@ -219,3 +235,53 @@ class EdgarSource:
             rows.extend(_item_202_rows(older))
         frame = pd.DataFrame(rows, columns=_EARNINGS_COLUMNS).drop_duplicates()
         return frame.sort_values("acceptance_datetime").reset_index(drop=True)
+
+    @cached("company_concept")
+    def company_concept(
+        self,
+        cik: str,
+        tag: str,
+        unit: str = "USD/shares",
+        taxonomy: str = "us-gaap",
+    ) -> pd.DataFrame:
+        """Every entry in `units[unit]` of one XBRL company-concept tag.
+
+        Args:
+            cik: SEC CIK, digits only.
+            tag: XBRL tag, e.g. "EarningsPerShareDiluted".
+            unit: The `units` key to read (default "USD/shares"); other units
+                are ignored.
+            taxonomy: Taxonomy prefix in the endpoint path (default "us-gaap").
+
+        Returns:
+            A `CONCEPT_COLUMNS` frame sorted by (filed, end, accn): `start`/
+            `end`/`filed` tz-naive datetime64 (a missing start is NaT), `val`
+            float64, `fy` nullable Int64, the rest object (None when absent).
+            A 404 -- the company never reported the tag -- returns an empty
+            frame with the same columns and dtypes, not an error.
+        """
+        url = _CONCEPT_URL.format(cik=int(cik), taxonomy=taxonomy, tag=tag)
+        data = self._get(url, missing_ok=True)
+        entries = [] if data is None else data.get("units", {}).get(unit, [])
+        rows = [
+            {
+                "start": entry.get("start"),
+                "end": entry.get("end"),
+                "val": entry.get("val"),
+                "accn": entry.get("accn"),
+                "fy": entry.get("fy"),
+                "fp": entry.get("fp"),
+                "form": entry.get("form"),
+                "filed": entry.get("filed"),
+                "frame": entry.get("frame"),
+            }
+            for entry in entries
+        ]
+        frame = pd.DataFrame(rows, columns=CONCEPT_COLUMNS)
+        for column in ("start", "end", "filed"):
+            frame[column] = pd.to_datetime(frame[column]).astype("datetime64[ns]")
+        frame["val"] = frame["val"].astype("float64")
+        frame["fy"] = frame["fy"].astype("Int64")
+        return frame.sort_values(
+            ["filed", "end", "accn"], na_position="last"
+        ).reset_index(drop=True)

@@ -169,6 +169,70 @@ tickers=None, cik_overrides=None, cik_resolver=None, strict=False) -> PeadPanelR
   to membership, so a ticker that was a member for only part of the range still
   pays for its non-member events.
 
+**`include_sue` (v0.8.0):** `build_pead_events(..., include_sue=True)` appends
+`eps_period_end, eps_filed, eps_diluted, eps_derived, eps_yoy_diff, sue_std,
+sue_n, sue` (datetime64, datetime64, float64, nullable `boolean`, float64 ×2,
+nullable `Int64`, float64). Each event matches the `quarterly_sue` quarter
+with the latest `period_end` strictly before `event_date`, within 100 days,
+and first `filed` no earlier than 7 days before the event (the 10-Q/10-K
+usually lands days to weeks after the 8-K) — the filed rule stops a
+mid-quarter Item 2.02 from matching the previous quarter whose 10-Q is
+months old. Unmatched events get NaT/NaN/`<NA>`. `build_pead_panel`'s
+`include_sue` runs `quarterly_sue` once per (CIK, label) group with kept
+events; a group's SUE failure lands in `PeadPanelReport.sue_failed`
+(ticker → "ExcType: message", first failure wins) and the events are kept
+with SUE missing. Cost: 2 SEC `companyconcept` requests + 2 bars requests
+per CIK group (plus the per-event costs above). The default stays
+`include_sue=False` — identical outputs and request counts to v0.7.0.
+
+## Quarterly EPS / SUE table
+
+Source: `data_universe/fundamentals/sue.py`'s `quarterly_sue(ticker, cik,
+edgar_source, price_source, *, history_start=None, window=8, min_obs=6)
+-> pd.DataFrame`.
+
+One row per fiscal quarter, sorted by `period_end` — built from SEC XBRL
+`companyconcept` facts (us-gaap `EarningsPerShareDiluted`, then
+`EarningsPerShareBasicAndDiluted`, unit `USD/shares`).
+
+| Column | Meaning |
+|---|---|
+| `cik` | The reporting CIK, digit string. |
+| `period_start` / `period_end` | The EPS period, from the fact's `start`/`end` (never `fy`/`fp`, which describe the filing). |
+| `filed` | The earliest `filed` date among filings disclosing this exact (start, end) period — the first-reported date. Restatements, amendments and later comparatives are filed later and drop out, so restated values can never leak in. |
+| `accn` / `form` / `tag` | Accession, form and tag of that first-reporting filing (of the annual filing, for a derived Q4). |
+| `eps_diluted` | Diluted EPS on the quarter's own as-filed share basis (float64). |
+| `derived` | `True` for a Q4 computed as `FY − (Q1+Q2+Q3)` — approximate (EPS isn't additive). |
+| `eps_yoy_diff` | `eps_q − eps_q−4` computed on today's share basis, then rescaled onto the quarter's own basis (float64, NaN when there's no lag-4 quarter). |
+| `sue_std` | Sample std (ddof=1) of the `window` most recent prior diffs visible on `filed`, on the quarter's own basis; NaN when fewer than `min_obs` diffs. |
+| `sue_n` | The number of prior diffs used (int64). |
+| `sue` | `eps_yoy_diff / sue_std` on the adjusted basis — the standardized unexpected earnings; NaN unless the std is finite and above the noise floor (a std ≤ 1e-9 × max(1, max|prior diff|) is float noise, reported as `sue_std` = 0.0). |
+
+**First-reported rule:** for each exact (start, end) period the earliest
+`filed` wins (ties: diluted tag, then `accn`); periods are identified by
+start/end, never `fy`/`fp`.
+
+**Split-basis rule:** internal math uses `eps_adj = val / factor(filed)` where
+`factor` is the raw ÷ split-adjusted close at the filing date (the product of
+split ratios effective strictly after it — a split on or before the filing
+date counts as already reflected, matching ASC 260 retroactive restatement).
+Outputs are multiplied back onto each quarter's own as-filed basis, so stored
+values never change when a later split happens; `sue` is basis-free.
+
+**Q4 derivation:** when no direct quarter ends within 7 days of a fiscal
+year's end, `FY − (Q1+Q2+Q3)` fills it — only if exactly three *deduplicated*
+direct quarters tile the year (the ±7-day end clustering runs on direct
+quarters first, so a same-period comparative with a shifted start can't
+count as a fourth part; |Q1.start − FY.start| ≤ 7d, consecutive gaps of
+1–7 days, and the leftover Q4 period is 65–125 days). `derived=True`,
+`filed` = the latest of the four filings.
+
+**SUE / point-in-time view:** SUE_q uses only V_q = {p : filed_p ≤ filed_q} —
+exactly what was computable the day EPS_q was first filed. The numerator is
+q's own diff; the denominator is the std (ddof=1) of the `window` most
+recent earlier diffs inside ~`window` quarters of lookback, when at least
+`min_obs` exist.
+
 ## Precompute parquet output
 
 Source: `data_universe/precompute.py`.

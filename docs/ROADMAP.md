@@ -4,7 +4,7 @@ A prioritized plan for improving the data `data_universe` fetches, driven by the
 research (earnings announcements + options) and the GNN ranker (a large, point-in-time
 S&P 500 universe, 2015 to now). Phase 1 shipped as v0.6.0 — see
 `docs/design/2026-10-27-v0.6.0-data-correctness-and-hardening.md` for its design and
-behavior changes. Phase 2 shipped as v0.7.0.
+behavior changes. Phase 2 shipped as v0.7.0. Phase 7a shipped as v0.8.0.
 
 ## Phases
 
@@ -17,7 +17,7 @@ behavior changes. Phase 2 shipped as v0.7.0.
 | 4 | Identity resolution (`membership/identity.py`) | GNN, PEAD | L | 1 + probe (3 helps) |
 | 5 | Precompute v2 (panels, versioning, tombstones) | all | M | 3 |
 | 6 | GNN datasets (return panels, open-to-open labels, correlation edges) | GNN | L | 3, 4, 5 |
-| 7 | New datasets: XBRL SUE, earnings calendar/estimates, news, short interest | PEAD, GNN | M each | 1 + probe; parallel with 3–6 |
+| 7 | New datasets: XBRL SUE, earnings calendar/estimates, news, short interest (7a shipped as v0.8.0) | PEAD, GNN | M each | 1 + probe; parallel with 3–6 |
 | 8 | Later: VRP IV30, Beta intraday/Kalman | VRP, Beta | L | 3 |
 
 ### Phase 1 — done (v0.6.0)
@@ -91,9 +91,13 @@ as sparse top-N edges per snapshot; SIC codes as a stand-in for historical GICS.
 
 ### Phase 7 — new datasets
 
-- **7a XBRL `companyfacts` (free):** first-reported quarterly diluted EPS keyed by the
-  earliest `filed` date (restatements can't leak in); SUE =
-  (EPS_q − EPS_{q−4}) / std of last 8 differences.
+- **7a XBRL `companyfacts` (free) — shipped as v0.8.0** (`data_universe/fundamentals/sue.py`
+  via `companyconcept`, plus `include_sue` on `build_pead_events`/`build_pead_panel`):
+  first-reported quarterly diluted EPS keyed by the earliest `filed` date
+  (restatements can't leak in); SUE = (EPS_q − EPS_{q−4}) / std of last 8 differences.
+  Same gate as everything else on this branch — don't merge before the probe confirms
+  the dividend basis; the probe's new `aapl_eps_concept` check verifies the
+  first-reported EPS assumption too.
 - **7b Benzinga earnings/estimates (if entitled):** announcement date/time, consensus
   and actual EPS — a surprise measure and an 8-K timing cross-check.
 - **7c Massive news:** daily article counts per ticker keyed by `published_utc`.
@@ -111,11 +115,12 @@ states with checkpoints.
 1. Merge v0.5.0 to `main`.
 2. Run `python -m data_universe.probe` with real keys and share the JSON — it resolves
    `OPEN_QUESTIONS.md` items 4, 5, 10, 15, 20, 22 and 24 and scopes Phases 3–4 and 7,
-   plus Phase 2's `cik_resolver`.
+   plus Phase 2's `cik_resolver`; its `aapl_eps_concept` check verifies Phase 7a's
+   first-reported EPS basis.
    If `dividend_cash_basis` comes back `split_adjusted`, flip
    `adjust.DIVIDEND_CASH_BASIS` (the fakes follow automatically).
-3. **Don't merge v0.6.0 — or v0.7.0, which stacks on it — until the dividend basis is
-   confirmed** — a wrong basis is a silent error.
+3. **Don't merge v0.6.0 — or v0.7.0/v0.8.0, which stack on it — until the dividend
+   basis is confirmed** — a wrong basis is a silent error.
 4. Once the probe picks the as-of CIK endpoint, implement a `cik_resolver` for
    `build_pead_panel` (`OPEN_QUESTIONS.md` item 24).
 
@@ -129,3 +134,6 @@ states with checkpoints.
 - Non-USD dividends raise on purpose (rare in the S&P 500; loud beats silently wrong).
 - Unverified vendor semantics (the `expired` flag, as-of details, ticker events) are
   confined to the probe, not hard dependencies.
+- SUE split factors depend on symbol continuity (bars are fetched by the current
+  symbol) until Phase 4's (security, date) → vendor-symbol map; `OPEN_QUESTIONS.md`
+  item 27.

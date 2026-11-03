@@ -66,6 +66,13 @@ kept iff `start <= event_date <= end` AND the ticker was a member at the
 close of its `pre_announcement_session` under one of the intervals in its
 resolved-CIK group (half-open `[start_date, end_date_excl)`; a NaN end means
 the interval is open).
+
+v0.8.0: optional `include_sue` on both functions appends the XBRL SUE
+columns from `data_universe.fundamentals.sue` (first-reported quarterly EPS,
+its year-over-year diff, and the point-in-time standardized unexpected
+earnings). The default is False, so default outputs and request counts are
+unchanged; in the panel a per-group SUE failure is recorded in
+`sue_failed` while the events are kept.
 """
 from __future__ import annotations
 
@@ -77,6 +84,13 @@ import pandas as pd
 
 from data_universe import calendar
 from data_universe.features import core
+from data_universe.fundamentals.sue import (
+    QUARTER_COLUMNS,
+    SUE_EVENT_COLUMNS,
+    attach_sue,
+    coerce_sue_dtypes,
+    quarterly_sue,
+)
 from data_universe.membership import grid as membership_grid
 from data_universe.membership import store as membership_store
 from data_universe.options import chain
@@ -111,6 +125,10 @@ _STRIKE_BAND = 0.20
 # Calendar days of lookback a panel run pads before `start`, so events near the
 # range edge still get their 31-close sigma window and session resolution.
 _PANEL_LOOKBACK_DAYS = 90
+# Calendar days before calendar_start that `include_sue` looks back for EPS
+# history: SUE needs ~13 quarters (~3.25 years) of filings before the first
+# event's quarter.
+_SUE_HISTORY_DAYS = 1300
 
 # (ticker, as_of "YYYY-MM-DD") -> (cik, cik_source label), or None to fall
 # through to `edgar_source.get_cik(ticker)`.
@@ -122,6 +140,7 @@ class PeadPanelReport:
     events: pd.DataFrame
     succeeded: Dict[str, int] = field(default_factory=dict)  # ticker -> events kept
     failed: Dict[str, str] = field(default_factory=dict)     # ticker -> "ExcType: message"
+    sue_failed: Dict[str, str] = field(default_factory=dict)  # ticker -> "ExcType: message"
 
 
 def build_pead_events(
@@ -133,6 +152,7 @@ def build_pead_events(
     calendar_start: str = "2015-01-01",
     calendar_end: Optional[str] = None,
     cik_source: Optional[str] = None,
+    include_sue: bool = False,
 ) -> pd.DataFrame:
     """Build the PEAD event table for one ticker.
 
@@ -151,6 +171,10 @@ def build_pead_events(
         cik_source: Label for where `cik` came from, recorded in the
             `cik_source` column. Defaults to "explicit" when `cik` is given;
             passing it without `cik` raises ValueError.
+        include_sue: When True, append the `SUE_EVENT_COLUMNS` from
+            `fundamentals.sue.attach_sue` (XBRL SUE per event). Costs extra
+            `company_concept` and bars requests; exceptions propagate since
+            the caller opted in.
 
     Returns:
         A DataFrame with one row per qualifying filing (see module
@@ -168,7 +192,8 @@ def build_pead_events(
     cik = str(int(cik))
     filings = edgar_source.earnings_8k_filings(cik)
     if filings.empty:
-        return _empty_events_frame()
+        empty = _empty_events_frame()
+        return attach_sue(empty, pd.DataFrame(columns=QUARTER_COLUMNS)) if include_sue else empty
 
     end = calendar_end or pd.Timestamp.today().strftime("%Y-%m-%d")
     session_index = calendar.sessions(price_source, calendar_start, end)
@@ -186,6 +211,16 @@ def build_pead_events(
     # next_earnings_session: the following row's event_date, known only in hindsight.
     table["next_earnings_session"] = table["event_date"].shift(-1)
     table["pre_is_stale"] = table["pre_is_stale"].astype("boolean")
+    if include_sue:
+        # SUE needs ~13 quarters (~3.25 years) of filings before the first
+        # event's quarter, so look back well past calendar_start.
+        history_start = (
+            pd.Timestamp(calendar_start) - pd.Timedelta(days=_SUE_HISTORY_DAYS)
+        ).strftime("%Y-%m-%d")
+        quarters = quarterly_sue(
+            ticker, cik, edgar_source, price_source, history_start=history_start
+        )
+        table = attach_sue(table, quarters)
     return table
 
 
@@ -201,6 +236,7 @@ def build_pead_panel(
     cik_overrides: Optional[Dict[str, str]] = None,
     cik_resolver: Optional[CikResolver] = None,
     strict: bool = False,
+    include_sue: bool = False,
 ) -> PeadPanelReport:
     """Build the PEAD event table for every member of an index, point-in-time.
 
@@ -235,13 +271,19 @@ def build_pead_panel(
             as-of-date CIK lookup (e.g. for renamed tickers).
         strict: Passed to the membership staleness check -- True raises
             `MembershipStaleError` instead of warning on stale tables.
+        include_sue: When True, append the `SUE_EVENT_COLUMNS` to each kept
+            event (XBRL SUE per CIK group). One group's SUE failure is caught
+            and recorded in `PeadPanelReport.sue_failed` -- the events are
+            kept with SUE missing.
 
     Returns:
         A `PeadPanelReport`: `events` sorted by (event_date, ticker) with
-        exactly `EVENT_COLUMNS`; `succeeded` mapping ticker -> kept-event
+        exactly `EVENT_COLUMNS` (`EVENT_COLUMNS + SUE_EVENT_COLUMNS` when
+        `include_sue`); `succeeded` mapping ticker -> kept-event
         count (0 when nothing qualified); `failed` mapping ticker ->
         "ExcType: message" for one ticker's isolated failure, which never
-        stops the rest of the panel.
+        stops the rest of the panel; `sue_failed` mapping ticker -> the first
+        SUE computation failure per ticker (with `include_sue`).
     """
     end = end or pd.Timestamp.today().strftime("%Y-%m-%d")
     if pd.Timestamp(start) > pd.Timestamp(end):
@@ -285,8 +327,15 @@ def build_pead_panel(
             failed[missing] = f"not a member of {index_id} between {start} and {end}"
         candidates = candidates.loc[candidates["ticker"].isin(requested)]
 
+    # SUE needs ~13 quarters (~3.25 years) of filings before the first event's
+    # quarter, so look back well past the panel's calendar start.
+    sue_history_start = (
+        pd.Timestamp(calendar_start) - pd.Timedelta(days=_SUE_HISTORY_DAYS)
+    ).strftime("%Y-%m-%d")
+
     events_frames = []
     succeeded: Dict[str, int] = {}
+    sue_failed: Dict[str, str] = {}
     for ticker, group in candidates.groupby("ticker"):
         try:
             cik_groups: Dict[Tuple[str, str], list] = {}
@@ -310,6 +359,23 @@ def build_pead_panel(
                 )
                 kept = _events_in_intervals(events, interval_rows, start_ts, end_ts)
                 if len(kept):
+                    if include_sue:
+                        try:
+                            quarters = quarterly_sue(
+                                ticker,
+                                cik,
+                                edgar_source,
+                                price_source,
+                                history_start=sue_history_start,
+                            )
+                            kept = attach_sue(kept, quarters)
+                        except Exception as exc:  # noqa: BLE001 - SUE is additive; keep the events
+                            sue_failed.setdefault(
+                                ticker, f"{type(exc).__name__}: {exc}"
+                            )
+                            kept = attach_sue(
+                                kept, pd.DataFrame(columns=QUARTER_COLUMNS)
+                            )
                     ticker_frames.append(kept)
             if ticker_frames:
                 combined = pd.concat(ticker_frames, ignore_index=True)
@@ -320,14 +386,19 @@ def build_pead_panel(
         except Exception as exc:  # noqa: BLE001 - isolate any failure, report it
             failed[ticker] = f"{type(exc).__name__}: {exc}"
 
+    panel_columns = EVENT_COLUMNS + SUE_EVENT_COLUMNS if include_sue else EVENT_COLUMNS
     if events_frames:
         events = pd.concat(events_frames, ignore_index=True)
         events = events.sort_values(["event_date", "ticker"]).reset_index(drop=True)
     else:
-        events = _empty_events_frame()
-    events = events[EVENT_COLUMNS]
+        events = pd.DataFrame(columns=panel_columns)
+    events = events[panel_columns]
     events["pre_is_stale"] = events["pre_is_stale"].astype("boolean")
-    return PeadPanelReport(events=events, succeeded=succeeded, failed=failed)
+    if include_sue:
+        events = coerce_sue_dtypes(events)
+    return PeadPanelReport(
+        events=events, succeeded=succeeded, failed=failed, sue_failed=sue_failed
+    )
 
 
 def _empty_events_frame() -> pd.DataFrame:
