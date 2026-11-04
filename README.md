@@ -273,6 +273,8 @@ The full suite runs against `sources/fakes.py`'s deterministic `FakeMarket`/
 
 ## See also
 
+- [`RESEARCH_CONTEXT.md`](RESEARCH_CONTEXT.md) — downstream research audit, Massive data
+  boundaries, implemented versus planned VRP features, and shared precompute priorities.
 - [`PLAN.md`](PLAN.md) — the original design spec this library implements.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — the phased plan for the data this library
   fetches, and what each phase depends on.
