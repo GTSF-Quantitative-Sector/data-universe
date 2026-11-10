@@ -68,14 +68,20 @@ endpoint (`OPEN_QUESTIONS.md` item 24); panel CIKs default to SEC's current map
 
 ### Phase 4 — identity resolution
 
-- Auto-link membership intervals by CIK and composite FIGI (Massive details/events +
-  SEC `tickers`/`formerNames`): same CIK + touching intervals → one security (FB→META);
-  same CIK with a gap → leave-and-rejoin (AMD); different CIK under one ticker →
-  different securities (AAL).
-- Fill `security_master`/`ticker_history` (a (security, date) → vendor-symbol map —
-  fixes upstream-symbol cases like AAMRQ).
-- Only conflicts go to a human review queue; `reviewed=True` rows already survive a
-  refresh. Then drop the "provisional" security_id warnings.
+- **4a shipped as v0.11.0** (`membership/identity.py`): intervals linked by
+  composite FIGI (renames, leave-and-rejoins) and touching-interval CIK with
+  uniqueness checks; a vendor-name check drops wrong-CIK records;
+  `tickers_for_cik` symbol discovery recovers retroactive-symbol members;
+  `split` overrides cut folded lines (CB/T/AGN/IR/FOX/FOXA);
+  `security_map`/`security_master`/`ticker_history`/`cik_history` populated;
+  `identity_review.csv` is the human queue answered through
+  `identity_overrides.csv`; `--offline` rebuilds reproduce the committed
+  tables byte for byte. The "provisional" wording is gone.
+- **4b (next):** the PEAD panel by security through `cik_history` and
+  `ticker_history` (`cik_segments`/`symbol_segments`), so CIK switches
+  inside intervals (MDT 2015, CI 2018, AVGO), predecessor CIKs (DIS,
+  GOOGL) and historical symbols (SPGI←MHFI, BKNG←PCLN) all reach the
+  event table.
 
 ### Phase 5 — precompute v2
 
@@ -135,9 +141,16 @@ The probe ran 2026-11-03 against the Massive host (report:
    (`massive_cik_resolver` over `/v3/reference/tickers/{ticker}?date=`, the
    default when the panel constructs Massive sources). Predecessor-CIK gaps
    remain — see `OPEN_QUESTIONS.md` item 34.
-3. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
+3. ~~Resolve membership identities~~ — **shipped in v0.11.0** (4a): the
+   `membership.identity` tool builds `security_map`/`security_master`/
+   `ticker_history`/`cik_history` from committed Massive+SEC evidence; human
+   answers live in `identity_overrides.csv`. **4b is next:** the PEAD panel by
+   security through `cik_history`/`ticker_history`
+   (`cik_segments`/`symbol_segments`), so mid-interval CIK switches,
+   predecessor CIKs and historical symbols all reach the event table.
+4. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
    `pip install -e ".[s3]"` to cover the skipped groups.
-4. Set a real SEC User-Agent contact (the placeholder is polite but generic).
+5. Set a real SEC User-Agent contact (the placeholder is polite but generic).
 
 ## Risks
 

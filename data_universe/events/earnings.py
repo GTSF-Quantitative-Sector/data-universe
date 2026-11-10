@@ -93,6 +93,7 @@ from data_universe.fundamentals.sue import (
 )
 from data_universe.membership import grid as membership_grid
 from data_universe.membership import store as membership_store
+from data_universe.membership.names import names_match
 from data_universe.options import chain
 from data_universe.sources.base import NY_TZ, REGULAR_CLOSE, REGULAR_OPEN
 from data_universe.sources.edgar import EdgarSource
@@ -135,14 +136,34 @@ _SUE_HISTORY_DAYS = 1300
 CikResolver = Callable[[str, str], Optional[Tuple[str, str]]]
 
 
-def massive_cik_resolver(source) -> CikResolver:
-    """A `CikResolver` backed by `source.as_of_cik` (Massive ticker details
-    `?date=`): `(cik, "massive_as_of")` for a hit, or None so the SEC current
-    map gets its usual turn. Recovers renamed tickers like FB (SEC's current
-    map has no "FB" at all -- OPEN_QUESTIONS.md item 24)."""
+def massive_cik_resolver(source, edgar_source=None) -> CikResolver:
+    """A `CikResolver` backed by `source.as_of_record` (Massive ticker
+    details `?date=`): `(cik, "massive_as_of")` for a hit, or None so the
+    SEC current map gets its usual turn. Recovers renamed tickers like FB
+    (SEC's current map has no "FB" at all -- OPEN_QUESTIONS.md item 24).
+
+    When `edgar_source` has `registrant_summary` (v0.11.0), the record's
+    registrant name is checked against the SEC name (and former names) for
+    the CIK it carries -- old Massive records sometimes carry another
+    company's CIK (XRAY -> Danaher's 313616, LLL -> JetBlue's 1158463), and a
+    mismatch falls back to `sec_current` rather than attaching the wrong
+    company's filings. Costs one `registrant_summary` call per distinct
+    resolved CIK (cached)."""
     def resolve(ticker: str, as_of: str) -> Optional[Tuple[str, str]]:
-        cik = source.as_of_cik(ticker, as_of)
-        return (cik, "massive_as_of") if cik else None
+        record = source.as_of_record(ticker, as_of)
+        if record is None or not record.get("cik"):
+            return None
+        cik = str(int(record["cik"]))
+        if edgar_source is not None and hasattr(edgar_source, "registrant_summary"):
+            summary = edgar_source.registrant_summary(cik)
+            if summary is None:
+                return None
+            sec_names = (
+                [summary.get("name")] if summary.get("name") else []
+            ) + list(summary.get("former_names") or [])
+            if not names_match(record.get("name"), sec_names):
+                return None
+        return (cik, "massive_as_of")
 
     return resolve
 
@@ -320,7 +341,7 @@ def build_pead_panel(
     if cik_resolver is None and default_source is not None:
         # ticker details `?date=` gives the as-of CIK (item 24); an explicit
         # resolver always wins and explicit sources keep SEC-only behaviour.
-        cik_resolver = massive_cik_resolver(default_source)
+        cik_resolver = massive_cik_resolver(default_source, edgar_source)
 
     membership_grid._check_staleness(index_id, strict)
     ticker_intervals = membership_store.load_ticker_intervals(index_id)

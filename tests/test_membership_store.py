@@ -4,7 +4,13 @@ import pytest
 from data_universe import config
 from data_universe.membership import store
 from data_universe.membership.errors import MembershipError
-from data_universe.membership.schema import TICKER_INTERVALS_COLUMNS
+from data_universe.membership.schema import (
+    CIK_EVIDENCE_COLUMNS,
+    CIK_HISTORY_COLUMNS,
+    IDENTITY_EVIDENCE_COLUMNS,
+    IDENTITY_REVIEW_COLUMNS,
+    TICKER_INTERVALS_COLUMNS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -97,3 +103,31 @@ def test_load_function_still_returns_empty_frame_for_known_index_missing_one_fil
     frame = store.load_ticker_intervals("sp500")
     assert list(frame.columns) == TICKER_INTERVALS_COLUMNS
     assert len(frame) == 0
+
+
+def test_new_identity_tables_round_trip_and_no_temp_files(tmp_path):
+    config.set_membership_tables_dir(str(tmp_path))
+    (tmp_path / "sp500").mkdir()
+    store.save_cik_history("sp500", pd.DataFrame(
+        [["FB-20131223", "1326801", "2013-12-23", "", "massive"]],
+        columns=CIK_HISTORY_COLUMNS))
+    store.save_identity_evidence("sp500", pd.DataFrame(
+        [["FB", "2013-12-23", "ok", "1326801", "Meta", "FIGI", "", "t"]],
+        columns=IDENTITY_EVIDENCE_COLUMNS))
+    store.save_cik_evidence("sp500", pd.DataFrame(
+        [["1326801", "ok", "Meta Platforms", "", "2004-01-01", "true", "t"]],
+        columns=CIK_EVIDENCE_COLUMNS))
+    store.save_identity_review("sp500", pd.DataFrame(
+        [["symbol_not_found", "GONE", "2010-01-01", "", "",
+          "2010-01-01", "2011-01-01", "x"]],
+        columns=IDENTITY_REVIEW_COLUMNS))
+    assert len(store.load_cik_history("sp500")) == 1
+    assert len(store.load_identity_evidence("sp500")) == 1
+    assert len(store.load_cik_evidence("sp500")) == 1
+    assert len(store.load_identity_review("sp500")) == 1
+    # atomic writes: no temp files left in the directory
+    leftovers = [p.name for p in (tmp_path / "sp500").iterdir()
+                 if p.name.startswith(".")]
+    assert leftovers == []
+    # overrides are read-only: missing file -> empty frame
+    assert store.load_identity_overrides("sp500").empty

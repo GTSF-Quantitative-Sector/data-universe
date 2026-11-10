@@ -345,20 +345,111 @@ Source: `data_universe/membership/grid.py` (wrapped by `data_universe.membership
   one row per requested session, one column per member key, `bool`. `grid.loc[t, k]` is
   True iff `start_date <= t < end_date_excl` for `k`'s interval — membership at the close
   of session `t` (half-open intervals; `end_date_excl` is the first non-member date).
-- `by="security_id"` (default): columns are provisional `<ticker>-<YYYYMMDD>` ids that
-  will change when identity resolution lands — **don't persist them**. `by="ticker"`:
-  columns are upstream's ticker symbol for each membership interval (see
-  `data_universe/membership/tables/sp500/README.md`, "Provisional identity"); renames
-  like FB → META are NOT linked.
+- `by="security_id"` (default): columns are resolved `<ticker>-<YYYYMMDD>` ids named
+  after each security's *first* membership interval — renames and leave-and-rejoins
+  share one id, reused tickers get different ones (see "Security identity" below).
+  `by="ticker"`: columns are upstream's ticker symbol for each membership interval;
+  renames like FB → META are NOT linked.
 - `mask_like(features, index_id, by=...)`: same index/columns as `features`; unknown
   columns are all-False. With `by="security_id"` and zero matching columns it raises
   `MembershipError` (almost certainly ticker columns — pass `by="ticker"`); with
   `by="ticker"` zero matches legitimately means non-members and never raises.
 - `members_on(index_id, date, by=...) -> list`: sorted member keys at the close of `date`.
 - Staleness: `status(index_id)` reports `verified_through`/`age_days`/`n_securities`/
-  `warnings`; once `age_days` exceeds `membership_max_staleness_days` (default 45) the
-  grid warns (`MembershipStaleWarning`) or, with `strict=True`, raises
-  `MembershipStaleError`.
+  `n_unresolved_intervals`/`identity_as_of`/`warnings`; once `age_days` exceeds
+  `membership_max_staleness_days` (default 45) the grid warns (`MembershipStaleWarning`)
+  or, with `strict=True`, raises `MembershipStaleError`.
+
+## Security identity
+
+Source: `data_universe/membership/identity.py` (`python -m data_universe.membership.identity`
+`[--offline | --refetch] [--dry-run]`). The tool rebuilds the committed identity tables
+from `identity_evidence.csv` (Massive `ticker_details(t, date=)` rows),
+`cik_evidence.csv` (SEC submissions summaries) and `cik_ticker_evidence.csv`
+(Massive `tickers_for_cik` lists); online runs fill gaps, `--offline`
+rebuilds the committed bytes exactly with zero network, and evidence checkpoints survive
+a crash. Human answers live in `identity_overrides.csv` — tools never write it.
+
+Tables (see `tables/sp500/README.md` for the full file list):
+
+- `security_map`: `evidence` ∈ `manual_link`/`figi_link`/`cik_link` (how the interval
+  joined its security), `massive` (evidence exists, heads a component), `new_default`
+  (unresolved); `reviewed` = named in a link/unlink override.
+- `cik_history`/`ticker_history`: `[security_id, cik|ticker, valid_from, valid_to_excl,
+  source]` — ticker_history `source` ∈ `membership` / `massive` (discovered) /
+  `manual`; cik_history `source` ∈ `massive` / `manual` (cik/symbol override cuts).
+- `security_master`: `name` from SEC, `latest_ticker`, `cik` (last cik_history row),
+  FIGIs (latest non-null), `notes` preserved across rebuilds.
+
+Linking: a `figi_link` needs `A.end ≤ B.start` and equal non-null composite FIGIs; a
+`cik_link` needs touching intervals with equal CIKs, unique candidates on both sides,
+and no FIGI contradiction; `link` overrides apply manually. Any merge that would put two
+overlapping intervals in one security is rejected (`link_would_overlap` review for auto
+edges, a raise for manual links). An `unlink` ending in one component raises.
+
+`identity_review.csv` kinds: `symbol_not_found`, `cik_change_within_interval`,
+`too_many_cik_changes`, `ambiguous_cik_link`, `same_cik_figi_mismatch`,
+`rejoin_unconfirmed`, `link_would_overlap`, `cik_starts_late`,
+`cik_name_mismatch`, `symbol_discovery_ambiguous`, `symbol_reassigned`,
+`cik_no_earnings_filings`:
+`cik_starts_late` — a massive CIK segment starting >30 days before the
+registrant's first SEC filing (a predecessor CIK is likely missing);
+`cik_no_earnings_filings` — a massive-segment CIK that never filed an 8-K
+Item 2.02 (dormant/subsidiary registrant, or an FDIC-filing bank like
+FRC/SBNY); `cik_name_mismatch` — vendor name ≠ SEC names, so the CIK is
+ignored; `symbol_discovery_ambiguous` — discovery found several candidates,
+or a candidate that is another interval's ticker; `symbol_reassigned` — a
+proposal only, never applied. `ack` overrides drop matching rows.
+
+Trusted CIKs: a Massive record's CIK counts only when the record's registrant
+name matches the SEC name or a former name for that CIK (`membership/names.py`
+token matching -- tolerant of abbreviations, spaced-out initials ("F M C"),
+hyphen/merge variants (two tokenizations), one-char typos (Levenshtein <=1),
+and unclosed parentheticals; strict enough to catch wrong-CIK records like
+XRAY->Danaher). Untrusted CIKs are treated as absent everywhere and listed as
+`cik_name_mismatch` rows -- missed, never wrong. The same check guards
+`massive_cik_resolver` (one `registrant_summary` call per distinct resolved
+CIK). A separate flag, `cik_no_earnings_filings`, marks massive-segment CIKs
+that never filed an 8-K Item 2.02 (dormant or subsidiary registrants like
+DISCA's 1024333) without changing trust semantics.
+
+Symbol discovery (Case A): when upstream's symbol has no trusted CIK at the
+interval start but the end fact has a trusted CIK, the walk starts at the
+bisected takeover date and goes BACKWARDS through `tickers_for_cik` to the
+symbols that CIK actually traded under (ANTM <- WLP, SPGI <- MHFI
+2013-05-15 → 2016-04-28; MHP before 2013 is missing from Massive).
+Vendor gaps end the walk but keep the segments found; uncovered parts of the
+prefix stay under the upstream symbol. Guards: >1 candidate needs a FIGI
+match, and a candidate that is another interval's ticker during the proposed
+span is ambiguous. Segments write `ticker_history` rows with source `massive`;
+`symbol_discovery_ambiguous` reviews carry the misses.
+Case B (both ends trusted, different CIKs -- the line changed company) only
+proposes a `symbol`/`split` override as `symbol_reassigned`; it never applies.
+
+Splits: upstream folds two companies into one ticker line when a symbol passes
+to the acquirer on the index day (CB 2016-01-19, AGN 2015-03-18, T 2005-12-01,
+IR 2020-03-02, FOX/FOXA 2019-03-19 -- the old companies' memberships, ACE/SBC/
+Actavis, are lost upstream). `split` overrides cut the interval at those dates
+into independently-resolved sub-intervals; other actions name sub-interval
+keys like (AGN, 2015-03-18).
+
+Override actions (`identity_overrides.csv`): `link`/`unlink` (force/forbid a merge of
+two intervals), `cik` (a [valid_from, valid_to_excl) CIK span), `symbol` (probe under a
+different symbol for a span — upstream uses retroactive symbols like AAMRQ), `split`
+(cut a ticker interval at a change-of-company date), `ack`
+(suppress a review row). Every row is validated; bad rows raise.
+
+Helpers: `membership.symbol_segments(index_id, security_id, start, end)` and
+`cik_segments(...)` return `[ticker|cik, valid_from, valid_to_excl, source]` covering
+`[start, end]` inclusive — history rows clipped, uncovered stretches filled with source
+`"extended"` (before the first row from the first row's value, otherwise the preceding
+row's). Unknown ids raise `MembershipError`.
+
+When ids can change: a refresh adds `new_default` intervals; an identity run can merge
+them under an existing security id (renames keep the earliest interval's
+`<ticker>-<YYYYMMDD>`); link/unlink/split overrides move intervals between
+ids too (the HRS↔LHX link moved LHX-20190601 to HRS-20080922). Commit and pin
+the tables before relying on an id for a panel.
 
 ## Config precedence
 

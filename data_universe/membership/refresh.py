@@ -15,12 +15,15 @@ Tables are written to `store.tables_dir("sp500")`: the packaged
 directory and validated (`intervals.membership_intervals`) before any committed file is
 replaced.
 
-Identity stays provisional (see `tables/sp500/README.md`): an interval with no existing
-`security_map` row gets the default `<ticker>-<YYYYMMDD>` security_id (evidence
-`new_default`, not reviewed). Existing `security_map`/`security_master` rows are kept for
-every interval that still exists, so a refresh never discards review work; rows whose
-interval no longer exists upstream are dropped and reported. `ticker_history.csv` and
-`tail_changes.csv` are left untouched.
+Identity: an interval with no existing `security_map` row gets the default
+`<ticker>-<YYYYMMDD>` security_id (evidence `new_default`, not reviewed) and
+`python -m data_universe.membership.identity` resolves it on the next run --
+the summary says so whenever intervals were added. Existing
+`security_map`/`security_master` rows are kept for every interval that still
+exists, so a refresh never discards review work; rows whose interval no
+longer exists upstream are dropped and reported. `ticker_history.csv`,
+`cik_history.csv`, `identity_*` files and `tail_changes.csv` are left
+untouched (identity_* manifest keys are carried forward).
 
 `verified_through` in the manifest is the UTC date of the refresh run: the day the tables
 were last confirmed against upstream's latest commit, which is what the staleness check in
@@ -190,10 +193,30 @@ def build_tables(
         else:
             identity = (row["security_id"], row["evidence"], bool(row["reviewed"]))
         map_rows.append([INDEX_ID, ticker, start, *identity])
-    new_map = pd.DataFrame(map_rows, columns=SECURITY_MAP_COLUMNS)
     derived_keys = {(ticker, start) for ticker, start, _ in derived}
+    derived_by_ticker = {}
+    for ticker, start, end in derived:
+        derived_by_ticker.setdefault(ticker, []).append((start, end))
+
+    def _inside(key):
+        """Start_date strictly inside a derived interval of the same ticker
+        (a `split` sub-interval row) -- those survive the refresh too."""
+        for s, e in derived_by_ticker.get(key[0], []):
+            if s < key[1] and (e is None or pd.isna(e) or key[1] < e):
+                return True
+        return False
+
+    for _, row in existing.iterrows():
+        key = (row["ticker"], row["start_date"])
+        if key not in derived_keys and _inside(key):
+            map_rows.append([
+                INDEX_ID, row["ticker"], row["start_date"],
+                row["security_id"], row["evidence"], bool(row["reviewed"]),
+            ])
+    new_map = pd.DataFrame(map_rows, columns=SECURITY_MAP_COLUMNS)
     is_dropped = [
-        key not in derived_keys for key in zip(existing["ticker"], existing["start_date"])
+        key not in derived_keys and not _inside(key)
+        for key in zip(existing["ticker"], existing["start_date"])
     ]
     dropped = existing.loc[np.array(is_dropped, dtype=bool)]
 
@@ -347,6 +370,15 @@ def refresh(
         "upstream_sha256": upstream_sha256,
         "verified_through": now.date().isoformat(),
     }
+    # Identity tables are rebuilt by `membership.identity`, not refresh --
+    # carry the identity_* manifest keys so the next identity run (and
+    # offline rebuilds) keep their provenance.
+    previous_manifest = (
+        store.load_manifest(INDEX_ID) if target.is_dir() else {}
+    )
+    for key, value in previous_manifest.items():
+        if key.startswith("identity_"):
+            manifest[key] = value
     _stage_and_install(ticker_intervals, security_map, security_master, manifest, target)
     return result
 
@@ -379,6 +411,11 @@ def format_summary(result: RefreshResult, max_listed: int = 25) -> str:
         f"  WARNING: dropped reviewed mapping {ticker} from {start} -> {security_id}"
         for ticker, start, security_id in result.dropped_reviewed
     ]
+    if result.added:
+        lines.append(
+            f"{len(result.added)} new interval(s) have default ids -- run "
+            "`python -m data_universe.membership.identity` to link them"
+        )
     lines.append(
         f"wrote {', '.join(WRITTEN_FILES)} to {result.tables_dir}"
         if result.written

@@ -32,10 +32,12 @@ def test_mask_like_works_end_to_end_against_committed_data():
 def test_grid_column_sums_match_interval_lengths_sampled():
     intervals = q.membership.sp500_intervals()
     assert len(intervals) > 1000  # real data: ~1,262 derived intervals expected
-    # Provisional identity: each security_id is "<ticker>-<start_date>", so it
-    # is unique by construction (pre-PR2 review has not yet merged any
-    # rename/reuse chains onto a shared security_id).
-    assert intervals["security_id"].is_unique is True
+    # Resolved identity (v0.11.0): renames/rejoins share one security_id, so
+    # ids are no longer per-row unique. AMD's two intervals share one id --
+    # it left and rejoined as the same registrant.
+    amd = intervals[intervals["security_id"].str.startswith("AMD-")]
+    assert len(amd) >= 2
+    assert amd["security_id"].nunique() == 1
     # Sanity-bound check on an actual column sum via members_on: S&P 500
     # membership count is always close to 500.
     assert 480 <= len(q.membership.members_on("sp500", "2020-06-15")) <= 520

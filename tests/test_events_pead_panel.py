@@ -465,15 +465,17 @@ class FakeMassiveOptions(FakeOptionsSource):
         self.as_of_calls = []
         FakeMassiveOptions.last_instance = self
 
-    def as_of_cik(self, ticker, date):
+    def as_of_record(self, ticker, date):
         self.as_of_calls.append((ticker, date))
-        return self.ciks.get(ticker)
+        cik = self.ciks.get(ticker)
+        return {"cik": cik, "name": "X"} if cik else None
 
 
 def test_massive_cik_resolver_labels_hits_and_falls_through():
     class _FakeAsOf:
-        def as_of_cik(self, ticker, date):
-            return {"FB": "1326801"}.get(ticker)
+        def as_of_record(self, ticker, date):
+            rec = {"FB": {"cik": "1326801", "name": "Meta Platforms"}}
+            return rec.get(ticker)
 
     resolve = massive_cik_resolver(_FakeAsOf())
     assert resolve("FB", "2020-06-01") == ("1326801", "massive_as_of")

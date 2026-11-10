@@ -1,11 +1,22 @@
 {
+  "identity_as_of": "2026-11-10",
+  "identity_built_at": "2026-11-10T23:34:00.730380+00:00",
+  "identity_coverage_start": "2003-09-11",
+  "identity_n_in_coverage": 1009,
+  "identity_n_intervals": 1269,
+  "identity_n_review": 79,
+  "identity_n_securities": 1231,
+  "identity_n_unresolved": 260,
+  "identity_tool_version": "membership-identity-1",
   "n_derived_intervals": 1262,
   "n_snapshot_rows": 2720,
-  "retrieved_at": "2026-10-14T16:26:17.311382+00:00",
-  "tool_version": "membership-pr1",
+  "retrieved_at": "2026-11-10T22:03:59.641922+00:00",
+  "tool_version": "membership-refresh-1",
+  "upstream_commit_date": "2026-09-07T14:56:49Z",
   "upstream_commit_sha": "a2430f2af0c79ddf0748e91de11bdeb1616ab5a7",
   "upstream_filename": "S&P 500 Historical Components & Changes (Updated).csv",
+  "upstream_last_snapshot_date": "2026-08-18",
   "upstream_repo": "fja05680/sp500",
   "upstream_sha256": "36326709d46d6cd25834de5df457b16f5f96fad3a06b9beac28f7b88aa0b0d54",
-  "verified_through": "2026-10-14"
+  "verified_through": "2026-11-10"
 }

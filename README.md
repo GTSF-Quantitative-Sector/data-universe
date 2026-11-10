@@ -130,10 +130,20 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
 - **`membership/`** — point-in-time S&P 500 membership from vendored
   [fja05680/sp500](https://github.com/fja05680/sp500) tables: `sp500_intervals`,
   `membership_grid`, `mask_like`, `members_on`, `status`, keyed by
-  `by="security_id"` (provisional `<ticker>-<YYYYMMDD>` ids — don't persist them) or
-  `by="ticker"` (upstream's symbol per interval; renames not linked). `status()`/the
-  grid warn once the data is more than 45 days past `verified_through`
-  (`strict=True` raises). Refresh monthly or after index changes with
+  `by="security_id"` (resolved `<ticker>-<YYYYMMDD>` ids — renames and rejoins
+  share one, reused tickers get their own) or `by="ticker"` (upstream's symbol
+  per interval; renames not linked). Identity resolution
+  (`python -m data_universe.membership.identity [--offline | --refetch]`) links
+  intervals via Massive `?date=` FIGI/CIK evidence into `security_master`,
+  `ticker_history` and `cik_history` (with a vendor-name check on every CIK,
+  `tickers_for_cik` discovery of historical symbols, and `split` overrides for
+  intervals where upstream folded two companies into one line), keeps ambiguous
+  cases in `identity_review.csv`, and takes human answers from
+  `identity_overrides.csv`;
+  `security_master()`, `ticker_history()`, `cik_history()`, `symbol_segments()`
+  and `cik_segments()` are re-exported for per-date lookups. `status()`/the grid
+  warn once the data is more than 45 days past `verified_through` (`strict=True`
+  raises). Refresh monthly or after index changes with
   `python -m data_universe.membership.refresh [--ref REF] [--dry-run]`; see
   `MAINTENANCE.md` item 2.
 - **`precompute.py`** — `precompute(tickers, feature_names, start, end, out_dir=None,
@@ -182,9 +192,12 @@ q.membership.members_on("sp500", "2020-06-15", by="ticker")     # ~500 tickers
 
 `by="ticker"` keys columns on upstream's ticker symbol for each membership interval
 (renames like FB → META are *not* linked); `by="security_id"` (the default) keys on
-provisional `<ticker>-<YYYYMMDD>` ids that will change when identity resolution lands —
-don't persist them. Tables and refresh tool live in `data_universe/membership/tables/sp500`;
-see `MAINTENANCE.md` item 2.
+resolved ids — `<ticker>-<YYYYMMDD>` of each security's first membership interval, so
+FB and META share one id while the two Dows stay apart. Per-security ticker and CIK
+timelines live in `ticker_history.csv`/`cik_history.csv` (`symbol_segments`/
+`cik_segments` give per-date views); unresolved intervals keep `new_default` ids and
+land in `identity_review.csv`. Tables and the refresh/identity tools live in
+`data_universe/membership/tables/sp500`; see `MAINTENANCE.md` item 2.
 
 ## Frame conventions
 

@@ -111,6 +111,11 @@ def _item_202_rows(page: dict) -> list:
     return rows
 
 
+def _item_202_seen(page: dict) -> bool:
+    """Any 8-K disclosing Item 2.02 in this submissions page?"""
+    return bool(_item_202_rows(page))
+
+
 class EdgarSource:
     """8-K Item 2.02 earnings announcement dates and CIK lookup from SEC EDGAR.
 
@@ -235,6 +240,46 @@ class EdgarSource:
             rows.extend(_item_202_rows(older))
         frame = pd.DataFrame(rows, columns=_EARNINGS_COLUMNS).drop_duplicates()
         return frame.sort_values("acceptance_datetime").reset_index(drop=True)
+
+    @cached("registrant_summary")
+    def registrant_summary(self, cik: str) -> Optional[dict]:
+        """A registrant's name and earliest filing date, from the submissions
+        JSON: `{"name": <entity name or None>, "former_names":
+        [formerNames[*].name], "first_filed": min over
+        filings.recent.filingDate and filings.files[*].filingFrom}`. A 404
+        (unknown CIK) returns None rather than raising."""
+        url = _SUBMISSIONS_URL.format(cik=int(cik))
+        data = self._get(url, missing_ok=True)
+        if data is None:
+            return None
+        dates = [
+            d for d in (data.get("filings", {}).get("recent", {}) or {})
+            .get("filingDate", [])
+        ]
+        files = data.get("filings", {}).get("files", []) or []
+        for entry in files:
+            if entry.get("filingFrom"):
+                dates.append(entry["filingFrom"])
+        # any 8-K ever disclosing Item 2.02? recent first, then the older
+        # pages, stopping as soon as one is found (dormant registrants pay
+        # the page cost, live ones don't)
+        has_item_202 = _item_202_seen(
+            (data.get("filings", {}).get("recent", {}) or {}))
+        for entry in files:
+            if has_item_202 or not entry.get("name"):
+                continue
+            page = self._get(
+                _SUBMISSIONS_FILES_URL.format(name=entry["name"]))
+            if _item_202_seen(page or {}):
+                has_item_202 = True
+        return {
+            "name": data.get("name") or None,
+            "former_names": [
+                e["name"] for e in data.get("formerNames", []) if e.get("name")
+            ],
+            "first_filed": min(dates) if dates else None,
+            "has_item_202": bool(has_item_202),
+        }
 
     @cached("company_concept")
     def company_concept(

@@ -263,3 +263,20 @@ def test_main_prints_a_summary(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert f"upstream: fja05680/sp500@{SHA}" in output
     assert "intervals: 0 -> 502 (502 new" in output
+
+
+def test_refresh_carries_identity_manifest_keys_and_reminder(tmp_path):
+    """identity_* manifest keys survive a refresh; a summary with added
+    intervals names the identity command."""
+    target = _tables_dir(tmp_path)
+    target.mkdir()
+    store.save_manifest("sp500", {
+        "verified_through": "2024-01-01", "identity_as_of": "2024-06-01",
+        "identity_tool_version": "membership-identity-1"})
+    result = refresh.refresh(session=_Session(_upstream()), now=NOW)
+    manifest = store.load_manifest("sp500")
+    assert manifest["identity_as_of"] == "2024-06-01"
+    assert manifest["identity_tool_version"] == "membership-identity-1"
+    summary = refresh.format_summary(result)
+    if result.added:
+        assert "membership.identity" in summary

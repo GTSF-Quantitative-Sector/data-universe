@@ -1,6 +1,10 @@
 """Join ticker_intervals + security_map into per-security membership
 intervals. Always derived at call time from the committed tables, never
 stored -- see spec D6.
+
+A `split` override (see `membership/identity.py`) produces several
+security_map rows for one ticker interval: the rows whose start_date lies
+inside the interval partition it, each piece resolving to its own security.
 """
 from __future__ import annotations
 
@@ -17,7 +21,9 @@ def membership_intervals(index_id: str) -> pd.DataFrame:
 
     Touching intervals resolved to the same `security_id` (e.g. FB -> META)
     are coalesced into one row; a real gap for the same `security_id`
-    (e.g. AMD leaving and rejoining) stays as separate rows.
+    (e.g. AMD leaving and rejoining) stays as separate rows. `split`
+    overrides cut a ticker interval into per-security pieces (e.g. CB's
+    2016-01-19 change of company).
 
     Raises:
         MembershipValidationError: a ticker_intervals row has no matching
@@ -26,20 +32,44 @@ def membership_intervals(index_id: str) -> pd.DataFrame:
     ticker_intervals = store.load_ticker_intervals(index_id)
     security_map = store.load_security_map(index_id)
 
-    merged = ticker_intervals.merge(
-        security_map[["index_id", "ticker", "start_date", "security_id"]],
-        on=["index_id", "ticker", "start_date"],
-        how="left",
-    )
-    unresolved = merged[merged["security_id"].isna()]
-    if len(unresolved):
+    # Partition each ticker interval by the security_map rows inside it;
+    # group the map once (ticker -> sorted [(start, sid)]) instead of
+    # re-filtering per interval.
+    by_ticker = {}
+    for _, row in security_map.iterrows():
+        by_ticker.setdefault(row["ticker"], []).append(
+            (row["start_date"], row["security_id"]))
+    for rows_for_ticker in by_ticker.values():
+        rows_for_ticker.sort()
+
+    pieces = []
+    unresolved = []
+    for _, iv in ticker_intervals.iterrows():
+        ticker, start, end = iv["ticker"], iv["start_date"], iv["end_date_excl"]
+        in_interval = [
+            r for r in by_ticker.get(ticker, [])
+            if r[0] >= start and (pd.isna(end) or r[0] < end)
+        ]
+        if start not in {r[0] for r in in_interval}:
+            unresolved.append((ticker, start))
+            continue
+        bounds = [r[0] for r in in_interval] + (
+            [end] if pd.notna(end) else [None]
+        )
+        for i, sub_start in enumerate(bounds[:-1]):
+            sub_end = bounds[i + 1]
+            sid = next(r[1] for r in in_interval if r[0] == sub_start)
+            pieces.append((index_id, sid, sub_start, sub_end))
+    if unresolved:
         raise MembershipValidationError(
             f"{len(unresolved)} ticker_intervals row(s) have no matching security_map "
-            f"row: {unresolved[['ticker', 'start_date']].to_dict('records')}"
+            f"row: {unresolved[:5]}"
         )
 
+    # coalesce touching pieces of the same security
+    frame = pd.DataFrame(pieces, columns=MEMBERSHIP_INTERVALS_COLUMNS)
     rows = []
-    for security_id, group in merged.sort_values("start_date").groupby("security_id"):
+    for security_id, group in frame.sort_values("start_date").groupby("security_id"):
         current_start, current_end = None, None
         for _, row in group.iterrows():
             start, end = row["start_date"], row["end_date_excl"]

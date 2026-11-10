@@ -249,3 +249,20 @@ def test_as_of_cik_5xx_exhausts_retries_and_raises():
     with pytest.raises(DataSourceError):
         source.as_of_cik("AAA", "2020-01-01")
     assert session.get.call_count == 2
+
+
+def test_tickers_for_cik_paginates_and_dedupes():
+    from unittest.mock import Mock
+    session = Mock()
+    session.get.side_effect = [
+        FakeResponse(200, {"results": [{"ticker": "MHFI"}, {"ticker": "DLRpC"}],
+                           "next_url": "http://x/page2"}),
+        FakeResponse(200, {"results": [{"ticker": "MHFI"}]}),
+    ]
+    source = MassiveSource(session=session)
+    out = source.tickers_for_cik("64040", "2015-06-01")
+    assert out == ["MHFI", "DLRpC"]
+    call_url = session.get.call_args_list[0][0][0]
+    assert "/v3/reference/tickers" in call_url
+    params = session.get.call_args_list[0][1].get("params", {})
+    assert params.get("cik") == "0000064040" and params.get("date") == "2015-06-01"

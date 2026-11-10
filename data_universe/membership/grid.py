@@ -55,9 +55,9 @@ def membership_grid(
         strict: If True, raise `MembershipStaleError` when the data is older
             than `config.get_membership_max_staleness_days()`. If False
             (default), emit `MembershipStaleWarning` and proceed anyway.
-        by: Column key -- "security_id" (default; provisional
+        by: Column key -- "security_id" (default; 
             `<ticker>-<YYYYMMDD>` ids that WILL change when identity
-            resolution lands, so don't persist them) or "ticker" (upstream's
+            resolution has landed; renames share one id) or "ticker" (upstream's
             ticker symbol for each membership interval; renames like
             FB -> META are NOT linked, each interval keys on its own symbol).
 
@@ -139,7 +139,7 @@ def mask_like(features: pd.DataFrame, index_id: str, by: str = "security_id") ->
     ):
         raise MembershipError(
             f"None of {index_id!r}'s security_ids matches any column of `features` "
-            "-- security_ids are provisional '<ticker>-<YYYYMMDD>' ids like "
+            "-- security_ids are '<ticker>-<YYYYMMDD>' ids like "
             "'AAPL-19960102', not tickers. Pass by=\"ticker\" for a ticker-keyed panel."
         )
     return grid.reindex(columns=features.columns, fill_value=False)
@@ -153,7 +153,8 @@ def members_on(index_id: str, date: str, by: str = "security_id") -> list:
 
 
 def status(index_id: str) -> dict:
-    """`{verified_through, age_days, n_securities, warnings}` for `index_id`."""
+    """`{verified_through, age_days, n_securities, n_unresolved_intervals,
+    identity_as_of, warnings}` for `index_id`."""
     manifest = store.load_manifest(index_id)
     verified_through = manifest.get("verified_through")
     age_days = None
@@ -169,10 +170,15 @@ def status(index_id: str) -> dict:
             )
     security_map = store.load_security_map(index_id)
     n_securities = security_map["security_id"].nunique() if len(security_map) else 0
+    n_unresolved = (
+        int((security_map["evidence"] == "new_default").sum()) if len(security_map) else 0
+    )
     return {
         "verified_through": verified_through,
         "age_days": age_days,
         "n_securities": n_securities,
+        "n_unresolved_intervals": n_unresolved,
+        "identity_as_of": manifest.get("identity_as_of"),
         "warnings": warnings_list,
     }
 

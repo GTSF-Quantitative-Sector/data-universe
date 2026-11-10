@@ -78,6 +78,8 @@ def test_mask_like_matches_features_shape_and_drops_unknown_columns(two_security
 
 def test_status_reports_fresh_manifest(two_security_tables):
     result = status("sp500")
+    assert result["n_unresolved_intervals"] is not None
+    assert "identity_as_of" in result
     assert result["n_securities"] == 2
     assert result["warnings"] == []
 

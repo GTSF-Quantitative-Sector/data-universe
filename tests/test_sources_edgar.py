@@ -340,3 +340,26 @@ def test_company_concept_403_raises_data_source_error():
     source = EdgarSource(session=session, user_agent="org me@example.org")
     with pytest.raises(DataSourceError, match="User-Agent"):
         source.company_concept("1", "EarningsPerShareDiluted")
+
+
+def test_registrant_summary_name_and_first_filed():
+    data = {
+        "name": "Apple Inc.",
+        "filings": {
+            "recent": {"filingDate": ["2024-02-01", "2023-05-10"]},
+            "files": [{"filingFrom": "1993-12-06"}],
+        },
+    }
+    session = Mock()
+    session.get.return_value = FakeResponse(data)
+    source = EdgarSource(session=session)
+    out = source.registrant_summary("320193")
+    assert out == {"name": "Apple Inc.", "former_names": [],
+                   "first_filed": "1993-12-06", "has_item_202": False}
+
+
+def test_registrant_summary_404_returns_none():
+    session = Mock()
+    session.get.return_value = FakeResponse(None, status_code=404)
+    source = EdgarSource(session=session)
+    assert source.registrant_summary("999999") is None

@@ -1,0 +1,80 @@
+kind,ticker,start_date,other_ticker,other_start_date,first_date,last_date,detail
+cik_change_within_interval,ASH,1996-01-02,,,2005-06-30,2005-07-01,CIK 7694 (ASHLAND INC) -> 1305014 (ASHLAND LLC) on 2005-07-01
+cik_change_within_interval,CCE,1998-10-08,,,2010-10-04,2010-10-05,"CIK 804055 (COCA-COLA REFRESHMENTS USA, INC.) -> 1650107 (COCA-COLA EUROPACIFIC PARTNERS plc) on 2010-10-05"
+cik_change_within_interval,DTV,2006-12-04,,,2009-11-22,2009-11-23,CIK 944868 (DIRECTV GROUP INC) -> 1465112 (DIRECTV) on 2009-11-23
+cik_change_within_interval,DUK,1996-01-02,,,2006-04-02,2006-04-03,"CIK 30371 (Duke Energy Carolinas, LLC) -> 1326160 (Duke Energy CORP) on 2006-04-03"
+cik_change_within_interval,DYN,2000-10-03,,,2007-04-02,2007-04-03,CIK 879215 (DYNEGY ILLINOIS INC.) -> 1379895 (DYNEGY INC.) on 2007-04-03
+cik_change_within_interval,ESRX,2003-09-26,,,2012-04-03,2012-04-04,CIK 885721 (EXPRESS SCRIPTS INC) -> 1532063 (Express Scripts Holding Co.) on 2012-04-04
+cik_change_within_interval,ETN,1996-01-02,,,2012-12-03,2012-12-04,CIK 31277 (EATON CORP) -> 1551182 (Eaton Corp plc) on 2012-12-04
+cik_change_within_interval,EXPE,2007-10-02,,,2011-12-21,2011-12-22,"CIK 1095357 (EXPEDIA INC) -> 1324424 (Expedia Group, Inc.) on 2011-12-22"
+cik_change_within_interval,HOT,2000-11-17,,,2006-04-09,2006-04-10,"CIK 48595 (STARWOOD HOTELS & RESORTS) -> 316206 (STARWOOD HOTELS & RESORTS WORLDWIDE, LLC) on 2006-04-10"
+cik_change_within_interval,MSI,1996-01-02,,,2003-09-11,2011-01-04,"CIK 93631 (FREDERICK'S OF HOLLYWOOD GROUP INC /NY/) -> 68505 (Motorola Solutions, Inc.) on 2011-01-04"
+cik_change_within_interval,OMX,1996-01-02,,,2003-09-11,2004-11-01,CIK 929428 (OFFICEMAX INC /OH/) -> 12978 (MAPLEBY HOLDINGS MERGER Corp) on 2004-11-01
+cik_change_within_interval,PLD,2003-07-17,,,2011-06-05,2011-06-06,"CIK 899881 (PROLOGIS) -> 1045609 (Prologis, Inc.) on 2011-06-06"
+cik_change_within_interval,S,1996-01-02,,,2004-12-02,2005-08-15,CIK 319256 (SEARS ROEBUCK & CO) -> 101830 (SPRINT LLC) on 2005-08-15
+cik_change_within_interval,TWX,1996-01-02,,,2009-03-30,2009-03-31,"CIK 1021387 (HISTORIC TW INC) -> 1105705 (WARNER MEDIA, LLC) on 2009-03-31"
+cik_name_mismatch,AABA,1999-12-08,,,,,Massive names CIK 316736 'YAHOO INC' but SEC has 'FIELDPOINT PETROLEUM CORP' (formerly ENERGY PRODUCTION CO) -- CIK ignored
+cik_name_mismatch,ALXN,2012-05-25,,,,,Massive names CIK 1347178 'ALEXION PHARMACEUTICALS INC' but SEC has 'Vanda Pharmaceuticals Inc.' -- CIK ignored
+cik_name_mismatch,APOL,2002-05-15,,,,,Massive names CIK 815094 'APOLLO GROUP INC CL A' but SEC has 'ABIOMED INC' -- CIK ignored
+cik_name_mismatch,CBH,2006-06-06,,,,,"Massive names CIK 1396009 'COMMERCE BANCORP INC.' but SEC has 'Vulcan Materials CO' (formerly Virginia Holdco, Inc.) -- CIK ignored"
+cik_name_mismatch,CMS,1999-05-03,,,,,Massive names CIK 201533 'CMS Energy Corporation' but SEC has 'CONSUMERS ENERGY CO' (formerly CONSUMERS POWER CO) -- CIK ignored
+cik_name_mismatch,EMC,1996-03-28,,,,,"Massive names CIK 1124610 'EMC CORPORATION' but SEC has 'VMWARE LLC' (formerly VMWARE, INC.) -- CIK ignored"
+cik_name_mismatch,LLL,2004-12-01,,,,,Massive names CIK 1158463 'L-3 COMMUNICATIONS HLDGS INC' but SEC has 'JETBLUE AIRWAYS CORP' -- CIK ignored
+cik_name_mismatch,MAY,1996-01-02,,,,,Massive names CIK 1018099 'MAY DEPARTMENT STORES CO' but SEC has 'MILLENNIUM CHEMICALS INC' (formerly MILLENIUM CHEMICALS INC) -- CIK ignored
+cik_name_mismatch,MDP,1996-01-02,,,,,Massive names CIK 923338 'MEREDITH CORP' but SEC has 'KOCH INDUSTRIES LLC' (formerly KOCH INDUSTRIES INC) -- CIK ignored
+cik_name_mismatch,MWW,2001-06-04,,,,,Massive names CIK 895421 'MONSTER WORLDWIDE INC' but SEC has 'MORGAN STANLEY' (formerly MORGAN STANLEY | MORGAN STANLEY | MORGAN STANLEY DEAN WITTER & CO | MORGAN STANLEY DEAN WITTER DISCOVER & CO | DEAN WITTER DISCOVER & CO) -- CIK ignored
+cik_name_mismatch,NCC,1996-01-02,,,,,Massive names CIK 1010247 'NATIONAL CITY CORP' but SEC has 'FPIC INSURANCE GROUP INC' -- CIK ignored
+cik_name_mismatch,PETM,2012-10-05,,,,,"Massive names CIK 1056288 'PETSMART INC' but SEC has 'FEDERATED HERMES, INC.' (formerly FEDERATED INVESTORS INC /PA/) -- CIK ignored"
+cik_name_mismatch,RRD,1996-01-02,,,,,Massive names CIK 1326380 'R R DONNELLEY & SONS CO' but SEC has 'GameStop Corp.' (formerly GSC Holdings Corp.) -- CIK ignored
+cik_name_mismatch,SNI,2008-07-01,,,,,"Massive names CIK 924168 'SCRIPPS NETWORKS INTERACTIVE INC CLA COMM STK (OH)' but SEC has 'ENERGY FOCUS, INC/DE' (formerly FIBERSTARS INC /CA/) -- CIK ignored"
+cik_name_mismatch,SYMC,2003-03-31,,,,,Massive names CIK 1011722 'SYMANTEC CORP' but SEC has 'NEXLAND INC' (formerly WINDSTAR RESOURCES INC | TURTLEBACK MOUNTAIN GOLD CO INC) -- CIK ignored
+cik_name_mismatch,THC,1996-01-02,,,,,Massive names CIK 880036 'TENET HEALTHCARE CORPORATION' but SEC has 'HOCKEY CO' (formerly SLM INTERNATIONAL INC /DE) -- CIK ignored
+cik_name_mismatch,WB,1996-01-02,,,,,Massive names CIK 1208211 'WACHOVIA CORP 2ND NEW' but SEC has 'RYDEX ETF TRUST' -- CIK ignored
+cik_name_mismatch,XRAY,2008-11-14,,,,,Massive names CIK 313616 'DENTSPLY INTL INC' but SEC has 'DANAHER CORP /DE/' -- CIK ignored
+cik_starts_late,CR,1996-01-02,,,2003-09-11,2004-12-30,CIK 1313900 (Crane Co) first filed 2004-12-30; segment starts 1996-01-02 -- a predecessor CIK is likely needed before 2004-12-30
+cik_starts_late,MI,2002-02-11,,,2003-09-11,2007-05-22,CIK 1399315 (MARSHALL & ILSLEY CORP) first filed 2007-05-22; segment starts 2002-02-11 -- a predecessor CIK is likely needed before 2007-05-22
+cik_starts_late,ORCL,1996-01-02,,,2003-09-11,2005-10-19,CIK 1341439 (ORACLE CORP) first filed 2005-10-19; segment starts 1996-01-02 -- a predecessor CIK is likely needed before 2005-10-19
+cik_starts_late,PSA,2005-08-19,,,2005-08-19,2007-03-20,CIK 1393311 (Public Storage) first filed 2007-03-20; segment starts 2005-08-19 -- a predecessor CIK is likely needed before 2007-03-20
+cik_starts_late,RAI,2002-09-04,,,2003-09-11,2004-01-16,CIK 1275283 (REYNOLDS AMERICAN INC) first filed 2004-01-16; segment starts 2002-09-04 -- a predecessor CIK is likely needed before 2004-01-16
+cik_starts_late,RF,1998-08-28,,,2003-09-11,2004-02-27,CIK 1281761 (REGIONS FINANCIAL CORP) first filed 2004-02-27; segment starts 1998-08-28 -- a predecessor CIK is likely needed before 2004-02-27
+cik_starts_late,VMC,1999-07-01,,,2003-09-11,2007-04-12,CIK 1396009 (Vulcan Materials CO) first filed 2007-04-12; segment starts 1999-07-01 -- a predecessor CIK is likely needed before 2007-04-12
+rejoin_unconfirmed,COV,2007-07-02,COV,2011-03-01,2009-06-05,2011-03-01,same CIK 1385187 across a gap (2009-06-05 -> 2011-03-01) but a composite FIGI is missing
+rejoin_unconfirmed,DG,1998-07-16,DG,2012-12-03,2007-07-09,2012-12-03,same CIK 29534 across a gap (2007-07-09 -> 2012-12-03) but a composite FIGI is missing
+rejoin_unconfirmed,ESV,2007-01-04,ESV,2012-07-31,2009-12-23,2012-07-31,same CIK 314808 across a gap (2009-12-23 -> 2012-07-31) but a composite FIGI is missing
+rejoin_unconfirmed,TEL,2007-07-02,TEL,2011-10-17,2009-06-26,2011-10-17,same CIK 1385157 across a gap (2009-06-26 -> 2011-10-17) but a composite FIGI is missing
+same_cik_figi_mismatch,BBT,1997-12-04,TFC,2019-12-09,,,"same CIK 92230 at touch ('BBT', '1997-12-04')->('TFC', '2019-12-09') but figis differ (BBG00JPVTY24/BBG001S5YYC0 vs BBG000BYYLS8/BBG001S5YYC0)"
+same_cik_figi_mismatch,CBS,1996-01-02,VIAC,2019-12-05,,,"same CIK 813828 at touch ('CBS', '1996-01-02')->('VIAC', '2019-12-05') but figis differ (BBG008B3QVR7/BBG001S6L063 vs BBG000C496P7/BBG001S6L063)"
+same_cik_figi_mismatch,HCP,2008-03-31,PEAK,2019-11-05,,,"same CIK 765880 at touch ('HCP', '2008-03-31')->('PEAK', '2019-11-05') but figis differ (BBG005QPDWZ1/BBG001S5RTS2 vs BBG000BKYDP9/BBG001S5RTS2)"
+same_cik_figi_mismatch,TMK,1996-01-02,GL,2019-08-08,,,"same CIK 320335 at touch ('TMK', '1996-01-02')->('GL', '2019-08-08') but figis differ (BBG000N7B1Z5/BBG001S5WRX4 vs BBG000BVD6X4/BBG001S5WRX4)"
+same_cik_figi_mismatch,UTX,1996-01-02,RTX,2020-04-03,,,"same CIK 101829 at touch ('UTX', '1996-01-02')->('RTX', '2020-04-03') but figis differ (BBG000LZL665/BBG001S5X5Q9 vs BBG000BW8S60/BBG001S5X5Q9)"
+symbol_discovery_ambiguous,EXPE,2007-10-02,,,2007-10-02,,"2 candidates for CIK 1324424 at 2007-10-02: ['EXPEW', 'EXPEZ'] -- figi match 0 not 1"
+symbol_discovery_ambiguous,MSI,1996-01-02,,,2003-09-11,,"2 candidates for CIK 68505 at 2003-09-11: ['MEU', 'MOT'] -- figi match 0 not 1"
+symbol_discovery_ambiguous,OMX,1996-01-02,,,2003-09-11,,"2 candidates for CIK 12978 at 2003-09-11: ['BCC', 'BEP'] -- figi match 0 not 1"
+symbol_discovery_ambiguous,S,1996-01-02,,,2003-09-11,,"3 candidates for CIK 101830 at 2003-09-11: ['FON', 'PCS', 'SDE'] -- figi match 0 not 1"
+symbol_not_found,ABKFQ,2000-12-11,,,2003-09-11,2008-06-10,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-06-10', '2008-06-03', '2008-05-11', '2008-03-12']"
+symbol_not_found,ANRZQ,2011-06-02,,,2011-06-02,2012-10-01,"first/last fact missing; tried ['2011-06-02', '2011-06-09', '2011-07-02', '2011-08-31', '2012-10-01', '2012-09-24', '2012-09-01', '2012-07-03']"
+symbol_not_found,ATGE,2009-06-09,,,2009-06-09,2012-09-30,"first/last fact missing; tried ['2009-06-09', '2009-06-16', '2009-07-09', '2009-09-07', '2012-09-30', '2012-09-23', '2012-08-31', '2012-07-02']"
+symbol_not_found,CAR,1996-01-02,,,2003-09-11,2006-07-31,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2006-07-31', '2006-07-24', '2006-07-01', '2006-05-02']"
+symbol_not_found,CCTYQ,1996-01-02,,,2003-09-11,2008-03-30,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-03-30', '2008-03-23', '2008-02-29', '2007-12-31']"
+symbol_not_found,CITGQ,2004-10-27,,,2004-10-27,2009-07-26,"first/last fact missing; tried ['2004-10-27', '2004-11-03', '2004-11-26', '2005-01-25', '2009-07-26', '2009-07-19', '2009-06-26', '2009-04-27']"
+symbol_not_found,CPNLQ,2000-12-01,,,2003-09-11,2005-12-01,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2005-12-01', '2005-11-24', '2005-11-01', '2005-09-02']"
+symbol_not_found,DALRQ,1996-01-02,,,2003-09-11,2005-08-18,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2005-08-18', '2005-08-11', '2005-07-19', '2005-05-20']"
+symbol_not_found,DCNAQ,1996-01-02,,,2003-09-11,2006-03-02,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2006-03-02', '2006-02-23', '2006-01-31', '2005-12-02']"
+symbol_not_found,DPHIQ,1999-05-28,,,2003-09-11,2005-10-10,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2005-10-10', '2005-10-03', '2005-09-10', '2005-07-12']"
+symbol_not_found,EKDKQ,1996-01-02,,,2003-09-11,2010-12-19,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2010-12-19', '2010-12-12', '2010-11-19', '2010-09-20']"
+symbol_not_found,FMCC,1996-01-02,,,2003-09-11,2008-09-10,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-09-10', '2008-09-03', '2008-08-11', '2008-06-12']"
+symbol_not_found,FNMA,1996-01-02,,,2003-09-11,2008-09-10,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-09-10', '2008-09-03', '2008-08-11', '2008-06-12']"
+symbol_not_found,HSH,1996-01-02,,,2003-09-11,2012-06-28,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2012-06-28', '2012-06-21', '2012-05-29', '2012-03-30']"
+symbol_not_found,IAC,2006-12-01,,,2006-12-01,2008-08-20,"first/last fact missing; tried ['2006-12-01', '2006-12-08', '2006-12-31', '2007-03-01', '2008-08-20', '2008-08-13', '2008-07-21', '2008-05-22']"
+symbol_not_found,KATE,1996-01-02,,,2003-09-11,2008-12-01,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-12-01', '2008-11-24', '2008-11-01', '2008-09-02']"
+symbol_not_found,LEHMQ,1998-01-12,,,2003-09-11,2008-09-16,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-09-16', '2008-09-09', '2008-08-17', '2008-06-18']"
+symbol_not_found,MERQ,2000-06-29,,,2003-09-11,2006-01-03,"last fact missing; tried ['2003-09-11', '2006-01-03', '2005-12-27', '2005-12-04', '2005-10-05']"
+symbol_not_found,MTLQQ,1996-01-02,,,2003-09-11,2009-06-02,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2009-06-02', '2009-05-26', '2009-05-03', '2009-03-04']"
+symbol_not_found,MWW,2001-06-04,,,2003-09-11,2011-12-18,"first fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2011-12-18', '2011-12-11', '2011-11-18', '2011-09-19']"
+symbol_not_found,RRD,1996-01-02,,,2003-09-11,2012-12-11,"first fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2012-12-11', '2012-12-04', '2012-11-11', '2012-09-12']"
+symbol_not_found,RSHCQ,1996-01-02,,,2003-09-11,2011-06-30,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2011-06-30', '2011-06-23', '2011-05-31', '2011-04-01']"
+symbol_not_found,SUNEQ,2007-05-31,,,2007-05-31,2011-12-18,"first/last fact missing; tried ['2007-05-31', '2007-06-07', '2007-06-30', '2007-08-29', '2011-12-18', '2011-12-11', '2011-11-18', '2011-09-19']"
+symbol_not_found,TMUS,2009-06-30,,,2009-06-30,2013-04-30,"first/last fact missing; tried ['2009-06-30', '2009-07-07', '2009-07-30', '2009-09-28', '2013-04-30', '2013-04-23', '2013-03-31', '2013-01-30']"
+symbol_not_found,VSTNQ,2000-06-29,,,2003-09-11,2006-01-02,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2006-01-02', '2005-12-26', '2005-12-03', '2005-10-04']"
+symbol_not_found,WAMUQ,1997-07-02,,,2003-09-11,2008-09-29,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2008-09-29', '2008-09-22', '2008-08-30', '2008-07-01']"
+symbol_not_found,WNDXQ,1996-01-02,,,2003-09-11,2004-12-02,"first/last fact missing; tried ['2003-09-11', '2003-09-18', '2003-10-11', '2003-12-10', '2004-12-02', '2004-11-25', '2004-11-02', '2004-09-03']"

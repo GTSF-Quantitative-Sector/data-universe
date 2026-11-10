@@ -10,7 +10,7 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: current version is `"0.10.0"`.** The rule lapsed twice: 40 commits across 7
+**Status: current version is `"0.11.0"`.** The rule lapsed twice: 40 commits across 7
 implementation phases shipped before the first bump to `"0.2.0"`, and 0.4.0's disk-cache
 work then shipped without a bump being recorded here either. Follow the rule from here
 on — bump both on every merged change, not just when someone notices the drift.
@@ -30,14 +30,28 @@ python -m data_universe.membership.refresh             # upstream's latest commi
 python -m data_universe.membership.refresh --ref SHA   # a specific upstream commit
 ```
 
-Then review `git diff`, run `pytest`, bump the version, and commit. The tool validates the
-upstream file (exact `date,tickers` header, strictly ascending dates, 480–520 members in
-the latest snapshot, no overlapping intervals), keeps existing
+Monthly routine: refresh → identity → triage → test → commit:
+
+```bash
+python -m data_universe.membership.refresh
+python -m data_universe.membership.identity   # needs the Massive key
+python -m data_universe.membership.identity --offline  # audit: must be a no-op
+```
+
+Refresh validates the upstream file (exact `date,tickers` header, strictly ascending
+dates, 480–520 members in the latest snapshot, no overlapping intervals), keeps existing
 `security_map`/`security_master` rows for intervals that still exist (reviewed mappings
-survive), gives new intervals provisional `<ticker>-<YYYYMMDD>` ids, rewrites
-`ticker_intervals.csv`, `security_map.csv`, `security_master.csv` and `manifest.json`
-(`verified_through` = run date, UTC), and leaves `ticker_history.csv`/`tail_changes.csv`
-alone; provenance is in `tables/sp500/README.md`.
+survive), gives new intervals default `<ticker>-<YYYYMMDD>` ids (`new_default`), and
+rewrites `ticker_intervals.csv`, `security_map.csv`, `security_master.csv` and
+`manifest.json` (`verified_through` = run date, UTC; `identity_*` keys carried forward).
+`identity` then resolves the new defaults against Massive `?date=` + SEC submissions,
+updating `ticker_history.csv`, `cik_history.csv`, `security_master.csv`, the evidence
+CSVs, and `identity_review.csv`. A full identity rebuild makes roughly 4k Massive +
+1k SEC requests, but a monthly run reuses the committed evidence and only probes new
+or changed intervals. Triage review rows by adding `link`/`unlink`/`cik`/
+`symbol`/`ack` rows to `identity_overrides.csv` and re-running; rows touching 2013+
+dates matter for current research, while older rows can be `ack`ed with a note. Then
+`pytest`, bump the version, and commit. Provenance is in `tables/sp500/README.md`.
 
 `sources/sec_adapter.sp500(query_date=...)` stays an optional alternative, maintained in
 the `sec_parser` repo (`pip install ".[sec]"`) — its upkeep instructions live in

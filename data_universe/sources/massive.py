@@ -141,6 +141,47 @@ class MassiveSource(PolygonSource):
         data = self._get(f"{self._base_url()}/v3/reference/tickers/{ticker}", params=params)
         return data.get("results") or {}
 
+    @cached("tickers_for_cik")
+    def tickers_for_cik(self, cik: str, date: str) -> list:
+        """Ticker symbols a CIK carried on `date` ("YYYY-MM-DD"), in API order.
+
+        `GET /v3/reference/tickers?cik=<10-digit>&date=D` (market=stocks,
+        active at the API default), following `next_url` like `list_tickers`.
+        Confirmed live 2026-11-10: SPGI's CIK 64040 at 2015-06-01 gives
+        [MHFI], BKNG's 1075531 gives [PCLN], ZBH's 1136869 gives [ZMH],
+        Eversource's 72741 at 2014-06-02 gives [NU] -- the historical
+        symbols a retroactively-renamed interval was filed under.
+
+        Args:
+            cik: SEC Central Index Key, digits only (zero-padded for the request).
+            date: As-of date, "YYYY-MM-DD".
+
+        Returns:
+            `results[*].ticker` in order, de-duplicated.
+        """
+        url = f"{self._base_url()}/v3/reference/tickers"
+        params = {"market": "stocks", "cik": f"{int(cik):0>10}", "date": date,
+                  "sort": "ticker", "order": "asc", "limit": 1000}
+        tickers = []
+        while url:
+            data = self._get(url, params=params)
+            tickers.extend(r.get("ticker") for r in (data.get("results") or []))
+            url = data.get("next_url")
+            params = None
+        return list(dict.fromkeys(t for t in tickers if t))
+
+    def as_of_record(self, ticker: str, date: str) -> Optional[dict]:
+        """The full `ticker_details` results dict for `ticker` as of `date`,
+        or None on a 404 (the symbol wasn't Massive's symbol that day). Any
+        other error propagates."""
+        try:
+            details = self.ticker_details(ticker, date=date)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                return None
+            raise
+        return details or None
+
     def as_of_cik(self, ticker: str, date: str) -> Optional[str]:
         """The CIK Massive records for `ticker` as of `date` ("YYYY-MM-DD"), or None.
 
@@ -157,14 +198,10 @@ class MassiveSource(PolygonSource):
         Returns:
             The CIK as an unpadded digit string (e.g. "1326801"), or None.
         """
-        try:
-            details = self.ticker_details(ticker, date=date)
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return None
-            raise
-        cik = details.get("cik")
-        return str(int(cik)) if cik else None
+        record = self.as_of_record(ticker, date)
+        if record is None or not record.get("cik"):
+            return None
+        return str(int(record["cik"]))
 
 
 class MassiveOptionsSource(MassiveSource, PolygonOptionsSource):
