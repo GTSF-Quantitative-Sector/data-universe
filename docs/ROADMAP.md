@@ -77,11 +77,11 @@ endpoint (`OPEN_QUESTIONS.md` item 24); panel CIKs default to SEC's current map
   `identity_review.csv` is the human queue answered through
   `identity_overrides.csv`; `--offline` rebuilds reproduce the committed
   tables byte for byte. The "provisional" wording is gone.
-- **4b (next):** the PEAD panel by security through `cik_history` and
-  `ticker_history` (`cik_segments`/`symbol_segments`), so CIK switches
-  inside intervals (MDT 2015, CI 2018, AVGO), predecessor CIKs (DIS,
-  GOOGL) and historical symbols (SPGI←MHFI, BKNG←PCLN) all reach the
-  event table.
+- **4b shipped as v0.12.0:** the PEAD panel by security through
+  `cik_history`/`ticker_history` (`cik_segments`/`symbol_segments`), so
+  CIK switches inside intervals (MDT 2015, CI 2018, AVGO), predecessor
+  CIKs (DIS, GOOGL) and historical symbols (SPGI←MHFI, BKNG←PCLN) all
+  reach the event table. **Next: Phase 5** (precompute v2).
 
 ### Phase 5 — precompute v2
 
@@ -144,10 +144,11 @@ The probe ran 2026-11-03 against the Massive host (report:
 3. ~~Resolve membership identities~~ — **shipped in v0.11.0** (4a): the
    `membership.identity` tool builds `security_map`/`security_master`/
    `ticker_history`/`cik_history` from committed Massive+SEC evidence; human
-   answers live in `identity_overrides.csv`. **4b is next:** the PEAD panel by
-   security through `cik_history`/`ticker_history`
-   (`cik_segments`/`symbol_segments`), so mid-interval CIK switches,
+   answers live in `identity_overrides.csv`. **4b shipped as v0.12.0:** the
+   PEAD panel by security through `cik_history`/`ticker_history`
+   (`cik_segments`/`symbol_segments`) — mid-interval CIK switches,
    predecessor CIKs and historical symbols all reach the event table.
+   Next: Phase 5.
 4. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
    `pip install -e ".[s3]"` to cover the skipped groups.
 5. Set a real SEC User-Agent contact (the placeholder is polite but generic).

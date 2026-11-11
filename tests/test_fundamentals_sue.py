@@ -581,3 +581,30 @@ def test_direct_quarters_are_deduped_before_deriving_q4():
     assert q4["derived"] == True  # noqa: E712
     assert q4["eps_diluted"] == pytest.approx(1.0)
     assert q4["filed"] == pd.Timestamp("2021-02-01")
+
+
+def test_predecessor_ciks_first_reported_across_registrants():
+    """The predecessor reported the quarter first -> its value and its CIK
+    win the output row; default () is unchanged."""
+    pred_facts = _series_facts([1.0, 1.1, 1.2, 0.9, 1.3, 1.5], filed_lag=40)
+    main_facts = _series_facts([9.9] * 6, filed_lag=55)  # filed later -> loses
+
+    class MultiCik:
+        def company_concept(self, cik, tag, unit="USD/shares", taxonomy="us-gaap"):
+            facts = pred_facts if str(cik) == "111" else main_facts
+            frame = pd.DataFrame([dict(e) for e in facts],
+                                 columns=CONCEPT_COLUMNS)
+            for column in ("start", "end", "filed"):
+                frame[column] = pd.to_datetime(frame[column])
+            frame["val"] = frame["val"].astype("float64")
+            frame["fy"] = frame["fy"].astype("Int64")
+            return frame
+
+    quarters = quarterly_sue(
+        "AAA", "222", MultiCik(), FakePolygonSource(),
+        predecessor_ciks=("111",))
+    assert set(quarters["cik"]) == {"111"}  # predecessor's facts won
+    assert quarters["eps_diluted"].iloc[0] == 1.0
+
+    base = quarterly_sue("AAA", "222", MultiCik(), FakePolygonSource())
+    assert set(base["cik"]) == {"222"}  # only main cik's facts seen

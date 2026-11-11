@@ -137,34 +137,52 @@ table has no ranking column at all.
 
 Source: `data_universe/events/earnings.py`'s `build_pead_panel(start, end=None,
 index_id="sp500", *, edgar_source=None, price_source=None, options_source=None,
-tickers=None, cik_overrides=None, cik_resolver=None, strict=False) -> PeadPanelReport`.
+tickers=None, cik_overrides=None, cik_resolver=None, strict=False,
+include_sue=False) -> PeadPanelReport` — the panel by SECURITY (v0.12.0), keyed
+by `security_id` from the committed identity tables.
 
 - `end` defaults to today; `start > end` raises `ValueError`. `edgar_source` defaults
   to `EdgarSource()`; whichever of `price_source`/`options_source` is omitted shares
   one `MassiveOptionsSource()`.
-- **Membership rule**: an event is kept iff `start <= event_date <= end` AND the
-  ticker was an index member at the close of its `pre_announcement_session` under one
-  of the intervals in its resolved-CIK group — `start_date <=
-  pre_announcement_session < end_date_excl`, a NaN end meaning an open interval.
-  Intervals come from `membership.store.load_ticker_intervals(index_id)` — keyed by
-  ticker until Phase 4's identity resolution; an unknown `index_id` raises
-  `MembershipError`, and the manifest's staleness check (`strict=`) applies first.
-- **CIK resolution**, per candidate interval with `as_of` = `max(interval
-  start_date, last session before `start`)`: `cik_overrides[ticker]` (label
-  `"explicit"`) → `cik_resolver(ticker, as_of)` if given and non-None —
-  defaulting to `massive_cik_resolver` on the shared `MassiveOptionsSource`
-  when the price/options sources defaulted (label `"massive_as_of"`,
-  `MassiveSource.as_of_cik` → `ticker_details(ticker, date=as_of)["cik"]`;
-  404 or a missing `cik` falls through) — →
-  `edgar_source.get_cik(ticker)` (label `"sec_current"`). Each ticker's intervals
-  group by (normalized CIK, label); each group gets one `build_pead_events` call and
-  keeps its events only inside that group's own intervals.
-- `PeadPanelReport.events` has exactly `EVENT_COLUMNS`, sorted by (event_date,
-  ticker) — an empty frame with those columns when nothing qualifies. `succeeded`
-  maps ticker → events kept (0 when none); `failed` maps ticker →
-  `"ExcType: message"`. One ticker's failure is caught and recorded, never stopping
-  the panel; a `tickers=`-requested ticker with no candidate interval lands in
-  `failed`, non-fatally.
+- **Membership rule**: an event is kept iff `start <= event_date <= end` AND its
+  security was an index member at the close of its `pre_announcement_session` under
+  one of its candidate pieces (`membership_pieces` — ticker intervals partitioned at
+  `split` sub-intervals). Unknown `index_id` raises `MembershipError`; the manifest
+  staleness check (`strict=`) applies first.
+- **Identity path** (the security has `cik_history` rows): per-date CIKs come from
+  `cik_segments(index_id, sid, calendar_start, end)` — or a single `"explicit"`
+  row covering the window when a `cik_overrides` entry names one of the security's
+  tickers — and per-date vendor symbols from `symbol_segments` (or, with no
+  `ticker_history`, the pieces' own tickers, extended through gaps). Every distinct
+  CIK's `earnings_8k_filings` is fetched once; a filing of CIK `c` is a candidate
+  when its ET filing date falls inside `home_i = [vf_i, vt_i)` widened by
+  `_CIK_BOUNDARY_SLACK_DAYS` = 100 days on the side(s) where the neighbouring row
+  has a different CIK (so the first filings under a new registrant, and the last of
+  the old, are not lost at a switch). Filings are deduped per filing date — home-CIK
+  filings first, then earliest acceptance — covering co-filed accessions and
+  same-day two-registrant pairs (GOOGL 2015-10-22). Each event's `ticker` is the
+  vendor symbol covering its filing date (FB before 2022-06-09, META after),
+  `cik` the filing's registrant, `cik_source` `"cik_history"` or `"explicit"`.
+- **Fallback path** (no `cik_history` rows — mostly unresolved `new_default`
+  securities): the pre-v0.12.0 per-interval logic — `cik_overrides` ("explicit") →
+  `cik_resolver(ticker, as_of)` → `edgar_source.get_cik` ("sec_current"), one
+  `build_pead_events` call per (CIK, label, ticker) group.
+- `PeadPanelReport.events` has `PANEL_EVENT_COLUMNS` = `EVENT_COLUMNS +
+  ["security_id"]` (+ `SUE_EVENT_COLUMNS` with `include_sue`), sorted by
+  (event_date, ticker, security_id). `succeeded`/`sue_failed`/`cik_gaps` are keyed
+  by security_id; `failed` holds "ExcType: message" per failed security or
+  requested-ticker miss. `cik_gaps[sid]` lists any `massive`/`manual` CIK row
+  with ≥180 days of member overlap but no home 8-K Item 2.02 filing.
+- `tickers=` selects a security when a requested ticker appears in ANY of its
+  pieces (not just the window's candidates) or ANY of its `ticker_history`
+  rows, with no date restriction — so `tickers=["META"]` includes FB-era
+  events, and a reused ticker (two Dow companies) selects every security
+  that ever used it and has candidate pieces in the window. A requested
+  ticker matching no security lands in `failed`, non-fatally.
+- `include_sue`: `quarterly_sue` is called with the security's last symbol and
+  last CIK plus `predecessor_ciks` = its other `cik_history` CIKs (ordered by
+  first `valid_from`), so a quarter first reported under an old registrant is
+  still found (see the SUE section).
 - Request cost: each event still costs its own bars window — 3 cached requests
   (split-adjusted bars + raw bars + dividends, the total-return composite's
   primitives; the SPY proxy fetch is shared through the cache) — plus up to 2 chain
@@ -190,6 +208,11 @@ per CIK group (plus the per-event costs above). The default stays
 `include_sue=False` — identical outputs and request counts to v0.7.0.
 
 ## Quarterly EPS / SUE table
+
+`quarterly_sue` also takes `predecessor_ciks=()` (v0.12.0): the security's
+older registrant CIKs, so first-reported facts are drawn from every CIK the
+company filed under (the output `cik` is the CIK of the chosen fact; a derived
+Q4 takes the annual fact's). With the default the behaviour is unchanged.
 
 Source: `data_universe/fundamentals/sue.py`'s `quarterly_sue(ticker, cik,
 edgar_source, price_source, *, history_start=None, window=8, min_obs=6)

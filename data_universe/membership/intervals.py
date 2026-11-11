@@ -12,7 +12,10 @@ import pandas as pd
 
 from data_universe.membership import store
 from data_universe.membership.errors import MembershipValidationError
-from data_universe.membership.schema import MEMBERSHIP_INTERVALS_COLUMNS
+from data_universe.membership.schema import (
+    MEMBERSHIP_INTERVALS_COLUMNS,
+    MEMBERSHIP_PIECES_COLUMNS,
+)
 
 
 def membership_intervals(index_id: str) -> pd.DataFrame:
@@ -97,3 +100,45 @@ def _append_interval(rows, index_id, security_id, start, end, next_start):
             f"and {next_start}"
         )
     rows.append((index_id, security_id, start, end))
+
+
+def membership_pieces(index_id: str) -> pd.DataFrame:
+    """One row per (sub-)interval -- `index_id, security_id, ticker,
+    start_date, end_date_excl` -- NOT coalesced: which ticker_intervals
+    piece maps to which security_id.
+
+    Same grouped-by-ticker partition as `membership_intervals`, except a
+    ticker interval with no security_map row at its start resolves to the
+    default `<ticker>-<YYYYMMDD>` id instead of raising, so tables with no
+    identity resolution still work."""
+    ticker_intervals = store.load_ticker_intervals(index_id)
+    security_map = store.load_security_map(index_id)
+
+    by_ticker = {}
+    for _, row in security_map.iterrows():
+        by_ticker.setdefault(row["ticker"], []).append(
+            (row["start_date"], row["security_id"]))
+    for rows_for_ticker in by_ticker.values():
+        rows_for_ticker.sort()
+
+    rows = []
+    for _, iv in ticker_intervals.iterrows():
+        ticker, start, end = iv["ticker"], iv["start_date"], iv["end_date_excl"]
+        in_interval = [
+            r for r in by_ticker.get(ticker, [])
+            if r[0] >= start and (pd.isna(end) or r[0] < end)
+        ]
+        if start not in {r[0] for r in in_interval}:
+            rows.append((
+                index_id,
+                f"{ticker}-{str(start).replace('-', '')}",
+                ticker, start, end,
+            ))
+            continue
+        bounds = [r[0] for r in in_interval] + (
+            [end] if pd.notna(end) else [None]
+        )
+        for i, sub_start in enumerate(bounds[:-1]):
+            sid = next(r[1] for r in in_interval if r[0] == sub_start)
+            rows.append((index_id, sid, ticker, sub_start, bounds[i + 1]))
+    return pd.DataFrame(rows, columns=MEMBERSHIP_PIECES_COLUMNS)

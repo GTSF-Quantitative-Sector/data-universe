@@ -31,6 +31,10 @@ TAIL_CHANGES_COLUMNS = ["effective_date", "action", "ticker", "source", "note"]
 
 MEMBERSHIP_INTERVALS_COLUMNS = ["index_id", "security_id", "start_date", "end_date_excl"]
 
+MEMBERSHIP_PIECES_COLUMNS = [
+    "index_id", "security_id", "ticker", "start_date", "end_date_excl",
+]
+
 CIK_HISTORY_COLUMNS = ["security_id", "cik", "valid_from", "valid_to_excl", "source"]
 
 IDENTITY_EVIDENCE_COLUMNS = [

@@ -7,7 +7,7 @@ import pytest
 
 from data_universe import config
 from data_universe.events.earnings import (
-    EVENT_COLUMNS,
+    PANEL_EVENT_COLUMNS,
     build_pead_panel,
     massive_cik_resolver,
 )
@@ -18,7 +18,13 @@ from data_universe.membership.errors import (
     MembershipStaleError,
     MembershipStaleWarning,
 )
-from data_universe.membership.schema import TICKER_INTERVALS_COLUMNS
+from data_universe.membership.schema import (
+    CIK_HISTORY_COLUMNS,
+    SECURITY_MAP_COLUMNS,
+    SECURITY_MASTER_COLUMNS,
+    TICKER_HISTORY_COLUMNS,
+    TICKER_INTERVALS_COLUMNS,
+)
 from data_universe.sources.base import DataSourceError
 from data_universe.sources.edgar import CONCEPT_COLUMNS
 from data_universe.sources.fakes import FakePolygonSource
@@ -124,7 +130,7 @@ def test_point_in_time_membership_uses_pre_announcement_session(tmp_path):
     )
     report = _panel("2024-01-01", "2024-06-01", edgar)
 
-    assert report.succeeded == {"AAA": 1, "BBB": 1, "FFF": 0}
+    assert report.succeeded == {"AAA-20240301": 1, "BBB-20240101": 1, "FFF-20240601": 0}
     aaa = report.events[report.events["ticker"] == "AAA"]
     assert list(aaa["event_date"]) == [pd.Timestamp("2024-05-02")]
     bbb = report.events[report.events["ticker"] == "BBB"].iloc[0]
@@ -145,7 +151,7 @@ def test_event_date_range_filter_is_inclusive_at_start(tmp_path):
         },
     )
     report = _panel("2024-01-01", "2024-05-31", edgar)
-    assert report.succeeded["CCC"] == 2
+    assert report.succeeded["CCC-20230101"] == 2
     assert list(report.events["event_date"]) == [
         pd.Timestamp("2024-01-01"),
         pd.Timestamp("2024-05-30"),
@@ -172,10 +178,10 @@ def test_one_tickers_failure_does_not_stop_the_panel(tmp_path):
     report = _panel(
         "2024-01-01", "2024-06-01", edgar, price_source=FailingBarsSource("EEE")
     )
-    assert report.succeeded == {"AAA": 1}
-    assert set(report.failed) == {"DDD", "EEE"}
-    assert report.failed["DDD"].startswith("ValueError")
-    assert report.failed["EEE"] == "DataSourceError: boom EEE"
+    assert report.succeeded == {"AAA-20240301": 1}
+    assert set(report.failed) == {"DDD-20230101", "EEE-20230101"}
+    assert report.failed["DDD-20230101"].startswith("ValueError")
+    assert report.failed["EEE-20230101"] == "DataSourceError: boom EEE"
     assert list(report.events["ticker"]) == ["AAA"]
 
 
@@ -192,7 +198,7 @@ def test_tickers_subset_restricts_candidates_and_reports_non_members(tmp_path):
         {"1111111": ["2024-05-02T19:15:00.000Z"], "2222222": ["2024-02-02T12:00:00.000Z"]},
     )
     report = _panel("2024-01-01", "2024-06-01", edgar, tickers=["AAA", "ZZZ"])
-    assert set(report.succeeded) == {"AAA"}
+    assert set(report.succeeded) == {"AAA-20240301"}
     assert report.failed["ZZZ"] == (
         "not a member of sp500 between 2024-01-01 and 2024-06-01"
     )
@@ -201,7 +207,7 @@ def test_tickers_subset_restricts_candidates_and_reports_non_members(tmp_path):
     # Requesting only a non-member yields an empty frame with EVENT_COLUMNS.
     report = _panel("2024-01-01", "2024-06-01", edgar, tickers=["ZZZ"])
     assert report.events.empty
-    assert list(report.events.columns) == EVENT_COLUMNS
+    assert list(report.events.columns) == PANEL_EVENT_COLUMNS
     assert report.events["pre_is_stale"].dtype == pd.BooleanDtype()
 
 
@@ -216,7 +222,7 @@ def test_cik_overrides_label_events_explicit(tmp_path):
         edgar,
         cik_overrides={"AAA": "0007777777"},
     )
-    assert report.succeeded == {"AAA": 1}
+    assert report.succeeded == {"AAA-20240301": 1}
     assert list(report.events["cik"]) == ["7777777"]  # normalized
     assert list(report.events["cik_source"]) == ["explicit"]
 
@@ -276,7 +282,7 @@ def test_ticker_with_two_cik_intervals_keeps_each_ciks_events_in_its_own_interva
         },
     )
     report = _panel("2024-01-01", "2024-06-01", edgar, cik_resolver=resolver)
-    assert report.succeeded == {"REN": 2}
+    assert report.succeeded == {"REN-20240101": 1, "REN-20240301": 1}
     by_date = report.events.set_index("event_date")
     assert by_date.loc[pd.Timestamp("2024-02-01"), "cik"] == "1111111"
     assert by_date.loc[pd.Timestamp("2024-05-02"), "cik"] == "2222222"
@@ -297,7 +303,7 @@ def test_panel_output_is_sorted_by_event_date_then_ticker_with_event_columns(
         },
     )
     report = _panel("2024-01-01", "2024-06-01", edgar)
-    assert list(report.events.columns) == EVENT_COLUMNS
+    assert list(report.events.columns) == PANEL_EVENT_COLUMNS
     keys = list(zip(report.events["event_date"], report.events["ticker"]))
     assert keys == [
         (pd.Timestamp("2024-02-01"), "AAA"),
@@ -315,7 +321,7 @@ def test_stale_manifest_warns_and_strict_raises(tmp_path):
     edgar = FakeEdgarSource({"AAA": "1111111"}, {"1111111": ["2024-05-02T19:15:00.000Z"]})
     with pytest.warns(MembershipStaleWarning):
         report = _panel("2024-01-01", "2024-06-01", edgar)
-    assert report.succeeded["AAA"] == 1
+    assert report.succeeded["AAA-20230101"] == 1
     with pytest.raises(MembershipStaleError):
         _panel("2024-01-01", "2024-06-01", edgar, strict=True)
 
@@ -393,7 +399,7 @@ def test_panel_include_sue_appends_columns_and_matches(tmp_path):
     )
     _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
     report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
-    assert list(report.events.columns) == EVENT_COLUMNS + SUE_EVENT_COLUMNS
+    assert list(report.events.columns) == PANEL_EVENT_COLUMNS + SUE_EVENT_COLUMNS
     assert report.sue_failed == {}
     row = report.events.iloc[0]
     assert row["eps_period_end"] == pd.Timestamp("2024-03-31")
@@ -418,8 +424,8 @@ def test_panel_include_sue_failure_keeps_events_and_records_it(tmp_path):
         [[INDEX, "AAA", "2023-01-01", None], [INDEX, "EEE", "2023-01-01", None]],
     )
     report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
-    assert report.succeeded == {"AAA": 1, "EEE": 1}
-    assert report.sue_failed == {"EEE": "DataSourceError: boom 6666666"}
+    assert report.succeeded == {"AAA-20230101": 1, "EEE-20230101": 1}
+    assert report.sue_failed == {"EEE-20230101": "DataSourceError: boom 6666666"}
     eee = report.events[report.events["ticker"] == "EEE"].iloc[0]
     assert np.isnan(eee["sue"])
     assert pd.isna(eee["eps_period_end"])
@@ -435,7 +441,7 @@ def test_panel_without_include_sue_has_exact_event_columns(tmp_path):
     )
     _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
     report = _panel("2024-01-01", "2024-06-01", edgar)
-    assert list(report.events.columns) == EVENT_COLUMNS
+    assert list(report.events.columns) == PANEL_EVENT_COLUMNS
     assert report.sue_failed == {}
 
 
@@ -444,7 +450,7 @@ def test_empty_panel_with_include_sue_has_all_columns(tmp_path):
     _save_tables(tmp_path, [[INDEX, "AAA", "2023-01-01", None]])
     report = _panel("2024-01-01", "2024-06-01", edgar, include_sue=True)
     assert report.events.empty
-    assert list(report.events.columns) == EVENT_COLUMNS + SUE_EVENT_COLUMNS
+    assert list(report.events.columns) == PANEL_EVENT_COLUMNS + SUE_EVENT_COLUMNS
     assert str(report.events["sue_n"].dtype) == "Int64"
     assert str(report.events["eps_derived"].dtype) == "boolean"
 
@@ -534,3 +540,229 @@ def test_an_explicit_resolver_beats_the_massive_default(tmp_path, monkeypatch):
     assert row["cik_source"] == "custom"
     # the default resolver was never consulted
     assert FakeMassiveOptions.last_instance.as_of_calls == []
+
+
+# --- Phase 4b: the identity path (cik_history / ticker_history) ----------------
+
+
+def _save_identity_tables(tmp_path, intervals, smap, thist, chist):
+    """ticker_intervals + the identity tables a security-level panel reads."""
+    _save_tables(tmp_path, intervals)
+    store.save_security_map(
+        INDEX, pd.DataFrame(smap, columns=SECURITY_MAP_COLUMNS))
+    store.save_ticker_history(
+        INDEX, pd.DataFrame(thist, columns=TICKER_HISTORY_COLUMNS))
+    store.save_cik_history(
+        INDEX, pd.DataFrame(chist, columns=CIK_HISTORY_COLUMNS))
+    ids = sorted({row[3] for row in smap})
+    store.save_security_master(INDEX, pd.DataFrame(
+        [[sid, "", smap[0][1], "", "", "", ""] for sid in ids],
+        columns=SECURITY_MASTER_COLUMNS))
+
+
+def _mdt_tables(tmp_path):
+    """One MDT interval/security with a mid-interval CIK switch."""
+    _save_identity_tables(
+        tmp_path,
+        [[INDEX, "MDT", "1996-01-02", None]],
+        [[INDEX, "MDT", "1996-01-02", "MDT-19960102", "massive", False]],
+        [["MDT-19960102", "MDT", "1996-01-02", "", "membership"]],
+        [["MDT-19960102", "64670", "1996-01-02", "2015-01-28", "massive"],
+         ["MDT-19960102", "1613103", "2015-01-28", "", "massive"]],
+    )
+
+
+def test_identity_mid_interval_cik_switch_keeps_both_sides(tmp_path):
+    """a. Old-CIK filings before AND 20 days after the switch (inside the
+    100-day slack) are kept with the old CIK; new-CIK filings keep theirs;
+    next_earnings_session is continuous across the switch."""
+    _mdt_tables(tmp_path)
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"},
+        {"64670": ["2014-10-20T20:15:00.000Z", "2015-02-10T20:15:00.000Z"],
+         "1613103": ["2015-05-15T20:15:00.000Z"]},
+    )
+    report = _panel("2014-10-01", "2015-06-30", edgar)
+    assert report.succeeded == {"MDT-19960102": 3}
+    rows = report.events.sort_values("event_date")
+    assert list(rows["cik"]) == ["64670", "64670", "1613103"]
+    assert list(rows["cik_source"]) == ["cik_history"] * 3
+    assert list(rows["next_earnings_session"].dropna()) == list(
+        rows["event_date"].iloc[1:])
+
+
+def test_identity_old_cik_filing_past_slack_is_dropped(tmp_path):
+    """b. A filing of the old CIK 150 days after the switch is outside the
+    +100d window and dropped."""
+    _mdt_tables(tmp_path)
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"},
+        {"64670": ["2015-07-01T20:15:00.000Z"],
+         "1613103": ["2015-05-15T20:15:00.000Z"]},
+    )
+    report = _panel("2014-10-01", "2015-09-30", edgar)
+    assert list(report.events["cik"]) == ["1613103"]
+
+
+def test_identity_rename_uses_the_symbol_at_filing_time(tmp_path):
+    """c. FB-era filings carry ticker FB, META-era ones META, under one
+    security_id."""
+    _save_identity_tables(
+        tmp_path,
+        [[INDEX, "FB", "2013-12-23", "2022-10-27"],
+         [INDEX, "META", "2022-10-27", None]],
+        [[INDEX, "FB", "2013-12-23", "FB-20131223", "massive", False],
+         [INDEX, "META", "2022-10-27", "FB-20131223", "figi_link", False]],
+        [["FB-20131223", "FB", "2013-12-23", "2022-06-09", "membership"],
+         ["FB-20131223", "META", "2022-06-09", "", "membership"]],
+        [["FB-20131223", "1326801", "2013-12-23", "", "massive"]],
+    )
+    edgar = FakeEdgarSource(
+        {"META": "1326801"},
+        {"1326801": ["2022-05-25T20:15:00.000Z", "2022-07-15T20:15:00.000Z"]},
+    )
+    report = _panel("2022-04-01", "2022-11-01", edgar)
+    assert report.succeeded == {"FB-20131223": 2}
+    rows = report.events.sort_values("event_date")
+    assert list(rows["ticker"]) == ["FB", "META"]
+    assert set(rows["security_id"]) == {"FB-20131223"}
+
+
+def test_identity_same_day_filings_dedupe_to_the_home_cik(tmp_path):
+    """d. Co-filed duplicates under both CIKs give one event; a same-day
+    different-accession pair keeps the home-CIK filing."""
+    _mdt_tables(tmp_path)
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"},
+        {"64670": ["2015-02-10T20:15:00.000Z"],
+         "1613103": ["2015-02-10T20:15:00.000Z"]},
+    )
+    report = _panel("2014-10-01", "2015-06-30", edgar)
+    assert len(report.events) == 1
+    assert report.events["cik"].iloc[0] == "1613103"
+    # same day, different accessions -> still one event, the home one
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"},
+        {"64670": ["2015-02-10T18:00:00.000Z"],
+         "1613103": ["2015-02-10T21:30:00.000Z"]},
+    )
+    report = _panel("2014-10-01", "2015-06-30", edgar)
+    assert len(report.events) == 1
+    assert report.events["cik"].iloc[0] == "1613103"
+
+
+def test_identity_tickers_filter_matches_history_and_misses(tmp_path):
+    """e. tickers=["META"] selects the FB security (META in its
+    ticker_history); tickers=["NOPE"] lands in failed."""
+    _save_identity_tables(
+        tmp_path,
+        [[INDEX, "FB", "2013-12-23", "2022-10-27"],
+         [INDEX, "META", "2022-10-27", None]],
+        [[INDEX, "FB", "2013-12-23", "FB-20131223", "massive", False],
+         [INDEX, "META", "2022-10-27", "FB-20131223", "figi_link", False]],
+        [["FB-20131223", "FB", "2013-12-23", "2022-06-09", "membership"],
+         ["FB-20131223", "META", "2022-06-09", "", "membership"]],
+        [["FB-20131223", "1326801", "2013-12-23", "", "massive"]],
+    )
+    edgar = FakeEdgarSource(
+        {"META": "1326801"}, {"1326801": ["2022-05-25T20:15:00.000Z"]})
+    report = _panel("2022-04-01", "2022-11-01", edgar, tickers=["META"])
+    assert report.succeeded == {"FB-20131223": 1}
+    assert report.events["ticker"].iloc[0] == "FB"
+    report = _panel("2022-04-01", "2022-11-01", edgar, tickers=["NOPE"])
+    assert report.failed["NOPE"].startswith("not a member")
+
+
+def test_identity_cik_override_labels_events_explicit(tmp_path):
+    """f. A cik_overrides entry on the security's ticker collapses the
+    cik rows to one explicit CIK."""
+    _mdt_tables(tmp_path)
+    edgar = FakeEdgarSource(
+        {"MDT": "999"},
+        {"999": ["2014-10-20T20:15:00.000Z", "2015-05-15T20:15:00.000Z"]},
+    )
+    report = _panel(
+        "2014-10-01", "2015-06-30", edgar, cik_overrides={"MDT": "999"})
+    assert set(report.events["cik"]) == {"999"}
+    assert set(report.events["cik_source"]) == {"explicit"}
+
+
+def test_identity_cik_gaps_reported_for_empty_cik_rows(tmp_path):
+    """g. A cik row with >=180d of membership overlap and no home filing
+    lands in cik_gaps."""
+    _mdt_tables(tmp_path)
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"},
+        {"64670": ["2014-10-20T20:15:00.000Z"]},  # nothing for 1613103
+    )
+    report = _panel("2014-10-01", "2015-09-30", edgar)
+    gaps = report.cik_gaps["MDT-19960102"]
+    assert "1613103" in gaps and "no 8-K Item 2.02" in gaps
+
+
+def test_identity_sue_uses_predecessor_ciks(tmp_path, monkeypatch):
+    """h. include_sue calls quarterly_sue with the security's other
+    cik_history CIKs as predecessor_ciks."""
+    _mdt_tables(tmp_path)
+    calls = {}
+
+    def spy(symbol, cik, edgar_source, price_source, **kwargs):
+        calls["symbol"] = symbol
+        calls["cik"] = cik
+        calls["predecessor_ciks"] = kwargs.get("predecessor_ciks")
+        return pd.DataFrame(columns=QUARTER_COLUMNS)
+
+    from data_universe.fundamentals.sue import QUARTER_COLUMNS
+    monkeypatch.setattr(
+        "data_universe.events.earnings.quarterly_sue", spy)
+    edgar = FakeEdgarSource(
+        {"MDT": "1613103"}, {"1613103": ["2015-05-15T20:15:00.000Z"]})
+    _panel("2015-01-01", "2015-06-30", edgar, include_sue=True)
+    assert calls["symbol"] == "MDT"
+    assert calls["cik"] == "1613103"
+    assert calls["predecessor_ciks"] == ["64670"]
+
+
+def test_identity_tickers_filter_before_rename_returns_old_era(tmp_path):
+    """tickers=["META"] with a window entirely before the rename still
+    selects FB-20131223 and returns its FB-ticker events."""
+    _save_identity_tables(
+        tmp_path,
+        [[INDEX, "FB", "2013-12-23", "2022-10-27"],
+         [INDEX, "META", "2022-10-27", None]],
+        [[INDEX, "FB", "2013-12-23", "FB-20131223", "massive", False],
+         [INDEX, "META", "2022-10-27", "FB-20131223", "figi_link", False]],
+        [["FB-20131223", "FB", "2013-12-23", "2022-06-09", "membership"],
+         ["FB-20131223", "META", "2022-06-09", "", "membership"]],
+        [["FB-20131223", "1326801", "2013-12-23", "", "massive"]],
+    )
+    edgar = FakeEdgarSource(
+        {"META": "1326801"}, {"1326801": ["2015-05-13T20:15:00.000Z"]})
+    report = _panel("2015-04-01", "2015-06-30", edgar, tickers=["META"])
+    assert report.succeeded == {"FB-20131223": 1}
+    assert report.events["ticker"].iloc[0] == "FB"
+    assert report.events["security_id"].iloc[0] == "FB-20131223"
+
+
+def test_identity_reused_ticker_selects_every_security(tmp_path):
+    """A reused ticker selects every security that ever used it and has
+    candidate pieces in the window (e.g. two Dow companies)."""
+    _save_identity_tables(
+        tmp_path,
+        [[INDEX, "DOW", "1996-01-02", "2017-09-01"],
+         [INDEX, "DOW", "2019-04-02", None]],
+        [[INDEX, "DOW", "1996-01-02", "DOW-19960102", "massive", False],
+         [INDEX, "DOW", "2019-04-02", "DOW-20190402", "massive", False]],
+        [["DOW-19960102", "DOW", "1996-01-02", "2017-09-01", "membership"],
+         ["DOW-20190402", "DOW", "2019-04-02", "", "membership"]],
+        [["DOW-19960102", "29915", "1996-01-02", "2017-09-01", "massive"],
+         ["DOW-20190402", "1751788", "2019-04-02", "", "massive"]],
+    )
+    edgar = FakeEdgarSource(
+        {"DOW": "1751788"},
+        {"29915": ["2017-02-14T21:00:00.000Z"],
+         "1751788": ["2020-02-05T21:00:00.000Z"]},
+    )
+    report = _panel("2016-10-01", "2020-06-30", edgar, tickers=["DOW"])
+    assert set(report.succeeded) == {"DOW-19960102", "DOW-20190402"}
+    assert set(report.events["security_id"]) == {"DOW-19960102", "DOW-20190402"}

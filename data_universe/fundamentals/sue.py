@@ -105,8 +105,9 @@ def quarterly_sue(
     history_start=None,
     window: int = SUE_WINDOW,
     min_obs: int = SUE_MIN_OBS,
+    predecessor_ciks=(),
 ) -> pd.DataFrame:
-    """The point-in-time SUE table for one CIK: one row per fiscal quarter.
+    """The point-in-time SUE table for one security: one row per fiscal quarter.
 
     Args:
         ticker: Ticker used for the split-factor price bars.
@@ -115,6 +116,10 @@ def quarterly_sue(
         price_source: Object with `.daily_bars_raw`/`.daily_bars_split_adjusted`.
         history_start: Start of the split-factor bars window, "YYYY-MM-DD";
             defaults to 10 days before the earliest first-reported filing.
+        predecessor_ciks: Additional CIKs of the same security (older
+            registrants) to pull facts from -- the earliest `filed` across
+            all CIKs wins, and the output `cik` is the CIK of the chosen
+            fact (the annual fact's for a derived Q4).
         window: How many prior quarterly diffs form the SUE std (default 8).
         min_obs: Minimum diffs needed for a finite std (default 6).
 
@@ -123,11 +128,13 @@ def quarterly_sue(
         typed, when neither EPS tag has facts (not an error).
     """
     cik = str(int(cik))
+    ciks = [cik] + [str(int(c)) for c in predecessor_ciks]
     frames = []
-    for tag in EPS_TAGS:
-        concepts = edgar_source.company_concept(cik, tag, unit=EPS_UNIT)
-        if len(concepts):
-            frames.append(concepts.assign(tag=tag))
+    for source_cik in ciks:
+        for tag in EPS_TAGS:
+            concepts = edgar_source.company_concept(source_cik, tag, unit=EPS_UNIT)
+            if len(concepts):
+                frames.append(concepts.assign(tag=tag, _src_cik=source_cik))
     if not frames:
         return _empty_quarters()
     facts = pd.concat(frames, ignore_index=True).dropna(
@@ -331,7 +338,7 @@ def _sue_columns(cik, kept, factors, window, min_obs) -> pd.DataFrame:
         )
         rows.append(
             {
-                "cik": cik,
+                "cik": period.get("_src_cik", cik),
                 "period_start": period["start"],
                 "period_end": period["end"],
                 "filed": filed_q,

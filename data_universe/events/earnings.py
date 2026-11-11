@@ -92,6 +92,8 @@ from data_universe.fundamentals.sue import (
     quarterly_sue,
 )
 from data_universe.membership import grid as membership_grid
+from data_universe.membership import history as membership_history
+from data_universe.membership import intervals as membership_intervals
 from data_universe.membership import store as membership_store
 from data_universe.membership.names import names_match
 from data_universe.options import chain
@@ -117,6 +119,7 @@ V2_EVENT_COLUMNS = [
 ]
 
 EVENT_COLUMNS = V1_EVENT_COLUMNS + V2_EVENT_COLUMNS
+PANEL_EVENT_COLUMNS = EVENT_COLUMNS + ["security_id"]
 
 # Monthly expiries are at most 35 days apart, so this window always contains the
 # nearest listed expiry after day0.
@@ -126,6 +129,7 @@ _STRIKE_BAND = 0.20
 # Calendar days of lookback a panel run pads before `start`, so events near the
 # range edge still get their 31-close sigma window and session resolution.
 _PANEL_LOOKBACK_DAYS = 90
+_CIK_BOUNDARY_SLACK_DAYS = 100
 # Calendar days before calendar_start that `include_sue` looks back for EPS
 # history: SUE needs ~13 quarters (~3.25 years) of filings before the first
 # event's quarter.
@@ -171,9 +175,10 @@ def massive_cik_resolver(source, edgar_source=None) -> CikResolver:
 @dataclass
 class PeadPanelReport:
     events: pd.DataFrame
-    succeeded: Dict[str, int] = field(default_factory=dict)  # ticker -> events kept
-    failed: Dict[str, str] = field(default_factory=dict)     # ticker -> "ExcType: message"
-    sue_failed: Dict[str, str] = field(default_factory=dict)  # ticker -> "ExcType: message"
+    succeeded: Dict[str, int] = field(default_factory=dict)  # sid -> kept
+    failed: Dict[str, str] = field(default_factory=dict)  # ticker/sid -> error
+    sue_failed: Dict[str, str] = field(default_factory=dict)  # security_id -> "ExcType: message"
+    cik_gaps: Dict[str, str] = field(default_factory=dict)   # security_id -> missing-filing notes
 
 
 def build_pead_events(
@@ -344,7 +349,9 @@ def build_pead_panel(
         cik_resolver = massive_cik_resolver(default_source, edgar_source)
 
     membership_grid._check_staleness(index_id, strict)
-    ticker_intervals = membership_store.load_ticker_intervals(index_id)
+    pieces = membership_intervals.membership_pieces(index_id)
+    ticker_history = membership_store.load_ticker_history(index_id)
+    cik_history = membership_store.load_cik_history(index_id)
 
     calendar_start = (
         pd.Timestamp(start) - pd.Timedelta(days=_PANEL_LOOKBACK_DAYS)
@@ -361,18 +368,32 @@ def build_pead_panel(
     if lower is None:
         lower = start_ts
 
-    interval_starts = pd.to_datetime(ticker_intervals["start_date"])
-    interval_ends = pd.to_datetime(ticker_intervals["end_date_excl"])
-    candidates = ticker_intervals.loc[
-        (interval_starts <= end_ts) & (interval_ends.isna() | (interval_ends > lower))
+    piece_starts = pd.to_datetime(pieces["start_date"])
+    piece_ends = pd.to_datetime(pieces["end_date_excl"])
+    candidates = pieces.loc[
+        (piece_starts <= end_ts) & (piece_ends.isna() | (piece_ends > lower))
     ]
 
     failed: Dict[str, str] = {}
     if tickers is not None:
         requested = set(tickers)
-        for missing in sorted(requested - set(candidates["ticker"])):
+        matched = set()
+        # A security is selected iff it has candidate pieces in the window
+        # and a requested ticker is ANY of its ticker_history tickers (no
+        # date restriction) or the ticker of ANY of its pieces -- a reused
+        # ticker can legitimately pick several securities.
+        pieces_by_sid = pieces.groupby("security_id")["ticker"].apply(set)
+        th_by_sid = ticker_history.groupby("security_id")["ticker"].apply(set)
+        selected = set()
+        for sid in set(candidates["security_id"]):
+            available = pieces_by_sid.get(sid, set()) | th_by_sid.get(sid, set())
+            hit = requested & available
+            if hit:
+                selected.add(sid)
+                matched |= hit
+        for missing in sorted(requested - matched):
             failed[missing] = f"not a member of {index_id} between {start} and {end}"
-        candidates = candidates.loc[candidates["ticker"].isin(requested)]
+        candidates = candidates.loc[candidates["security_id"].isin(selected)]
 
     # SUE needs ~13 quarters (~3.25 years) of filings before the first event's
     # quarter, so look back well past the panel's calendar start.
@@ -380,63 +401,42 @@ def build_pead_panel(
         pd.Timestamp(calendar_start) - pd.Timedelta(days=_SUE_HISTORY_DAYS)
     ).strftime("%Y-%m-%d")
 
+    ctx = _PanelCtx(
+        edgar_source=edgar_source, price_source=price_source,
+        options_source=options_source, session_index=session_index,
+        calendar_start=calendar_start, end=end, lower=lower,
+        start_ts=start_ts, end_ts=end_ts, cik_overrides=cik_overrides or {},
+        cik_resolver=cik_resolver, include_sue=include_sue,
+        sue_history_start=sue_history_start, index_id=index_id,
+    )
+
     events_frames = []
     succeeded: Dict[str, int] = {}
     sue_failed: Dict[str, str] = {}
-    for ticker, group in candidates.groupby("ticker"):
+    cik_gaps: Dict[str, str] = {}
+    for sid in sorted(set(candidates["security_id"])):
+        sid_pieces = candidates.loc[candidates["security_id"] == sid]
+        sid_cik = cik_history.loc[cik_history["security_id"] == sid]
+        sid_th = ticker_history.loc[ticker_history["security_id"] == sid]
         try:
-            cik_groups: Dict[Tuple[str, str], list] = {}
-            for _, row in group.iterrows():
-                as_of = max(pd.Timestamp(row["start_date"]), lower).strftime("%Y-%m-%d")
-                key = _resolve_cik(
-                    edgar_source, ticker, as_of, cik_overrides, cik_resolver
-                )
-                cik_groups.setdefault(key, []).append(row)
-            ticker_frames = []
-            for (cik, label), interval_rows in cik_groups.items():
-                events = build_pead_events(
-                    ticker,
-                    edgar_source,
-                    price_source,
-                    options_source,
-                    cik=cik,
-                    cik_source=label,
-                    calendar_start=calendar_start,
-                    calendar_end=end,
-                )
-                kept = _events_in_intervals(events, interval_rows, start_ts, end_ts)
-                if len(kept):
-                    if include_sue:
-                        try:
-                            quarters = quarterly_sue(
-                                ticker,
-                                cik,
-                                edgar_source,
-                                price_source,
-                                history_start=sue_history_start,
-                            )
-                            kept = attach_sue(kept, quarters)
-                        except Exception as exc:  # noqa: BLE001 - SUE is additive; keep the events
-                            sue_failed.setdefault(
-                                ticker, f"{type(exc).__name__}: {exc}"
-                            )
-                            kept = attach_sue(
-                                kept, pd.DataFrame(columns=QUARTER_COLUMNS)
-                            )
-                    ticker_frames.append(kept)
-            if ticker_frames:
-                combined = pd.concat(ticker_frames, ignore_index=True)
-                events_frames.append(combined)
-                succeeded[ticker] = len(combined)
+            if len(sid_cik):
+                frame = _security_events_identity(
+                    sid, sid_pieces, sid_th, sid_cik, ctx,
+                    sue_failed, cik_gaps)
             else:
-                succeeded[ticker] = 0
+                frame = _security_events_fallback(
+                    sid, sid_pieces, ctx, sue_failed)
+            if len(frame):
+                events_frames.append(frame)
+            succeeded[sid] = len(frame)
         except Exception as exc:  # noqa: BLE001 - isolate any failure, report it
-            failed[ticker] = f"{type(exc).__name__}: {exc}"
+            failed[sid] = f"{type(exc).__name__}: {exc}"
 
-    panel_columns = EVENT_COLUMNS + SUE_EVENT_COLUMNS if include_sue else EVENT_COLUMNS
+    panel_columns = PANEL_EVENT_COLUMNS + (SUE_EVENT_COLUMNS if include_sue else [])
     if events_frames:
         events = pd.concat(events_frames, ignore_index=True)
-        events = events.sort_values(["event_date", "ticker"]).reset_index(drop=True)
+        events = events.sort_values(
+            ["event_date", "ticker", "security_id"]).reset_index(drop=True)
     else:
         events = pd.DataFrame(columns=panel_columns)
     events = events[panel_columns]
@@ -444,8 +444,277 @@ def build_pead_panel(
     if include_sue:
         events = coerce_sue_dtypes(events)
     return PeadPanelReport(
-        events=events, succeeded=succeeded, failed=failed, sue_failed=sue_failed
-    )
+        events=events, succeeded=succeeded, failed=failed,
+        sue_failed=sue_failed, cik_gaps=cik_gaps)
+
+
+@dataclass
+class _PanelCtx:
+    """The shared bits the per-security panel paths need."""
+
+    edgar_source: object = None
+    price_source: object = None
+    options_source: object = None
+    session_index: object = None
+    calendar_start: str = ""
+    end: str = ""
+    lower: pd.Timestamp = None
+    start_ts: pd.Timestamp = None
+    end_ts: pd.Timestamp = None
+    cik_overrides: Dict[str, str] = field(default_factory=dict)
+    cik_resolver: object = None
+    include_sue: bool = False
+    sue_history_start: str = ""
+    index_id: str = "sp500"
+
+
+def _security_events_fallback(sid, sid_pieces, ctx, sue_failed):
+    """No cik_history rows: the pre-4b per-interval logic over the
+    security's pieces, grouped by (cik, label, ticker)."""
+    cik_groups: Dict[Tuple[str, str, str], list] = {}
+    for _, piece in sid_pieces.iterrows():
+        as_of = max(
+            pd.Timestamp(piece["start_date"]), ctx.lower
+        ).strftime("%Y-%m-%d")
+        cik, label = _resolve_cik(
+            ctx.edgar_source, piece["ticker"], as_of,
+            ctx.cik_overrides, ctx.cik_resolver)
+        cik_groups.setdefault((cik, label, piece["ticker"]), []).append(piece)
+    frames = []
+    for (cik, label, ticker), interval_rows in cik_groups.items():
+        events = build_pead_events(
+            ticker, ctx.edgar_source, ctx.price_source, ctx.options_source,
+            cik=cik, cik_source=label,
+            calendar_start=ctx.calendar_start, calendar_end=ctx.end)
+        kept = _events_in_intervals(events, interval_rows, ctx.start_ts, ctx.end_ts)
+        if len(kept):
+            if ctx.include_sue:
+                try:
+                    quarters = quarterly_sue(
+                        ticker, cik, ctx.edgar_source, ctx.price_source,
+                        history_start=ctx.sue_history_start)
+                    kept = attach_sue(kept, quarters)
+                except Exception as exc:  # noqa: BLE001 - SUE is additive
+                    sue_failed.setdefault(
+                        sid, f"{type(exc).__name__}: {exc}")
+                    kept = attach_sue(
+                        kept, pd.DataFrame(columns=QUARTER_COLUMNS))
+            kept["security_id"] = sid
+            frames.append(kept)
+    if frames:
+        return pd.concat(frames, ignore_index=True)
+    return pd.DataFrame(columns=EVENT_COLUMNS + ["security_id"])
+
+
+def _security_events_identity(sid, sid_pieces, sid_th, sid_cik_full, ctx,
+                              sue_failed, cik_gaps):
+    """Identity path: per-date CIKs from cik_history with +-100d boundary
+    slack, vendor symbols from ticker_history, one deduped event table."""
+    # 1. cik_rows over the calendar window (or one explicit row)
+    override = next(
+        (ctx.cik_overrides[t] for t in sid_pieces["ticker"]
+         if t in ctx.cik_overrides), None)
+    if override is not None:
+        cik_rows = [(str(int(override)), pd.Timestamp(ctx.calendar_start),
+                     ctx.end_ts + pd.Timedelta(days=1), "explicit")]
+        label = "explicit"
+    else:
+        cik_rows = _hist_rows(
+            membership_history.cik_segments(
+                ctx.index_id, sid, ctx.calendar_start, ctx.end), "cik")
+        label = "cik_history"
+
+    # 2. symbol coverage over the same window
+    if len(sid_th):
+        sym_rows = _hist_rows(
+            membership_history.symbol_segments(
+                ctx.index_id, sid, ctx.calendar_start, ctx.end), "ticker")
+    else:
+        sym_rows = _piece_symbol_rows(sid_pieces, ctx)
+
+    # 3. filings per distinct cik, tagged with cik + et_date
+    filings = []
+    for c in sorted({row[0] for row in cik_rows}):
+        frame = ctx.edgar_source.earnings_8k_filings(c)
+        if frame.empty:
+            continue
+        frame = frame.copy()
+        frame["cik"] = c
+        accepted = pd.to_datetime(
+            frame["acceptance_datetime"], utc=True).dt.tz_convert(NY_TZ)
+        frame["et_date"] = accepted.dt.tz_localize(None).dt.normalize()
+        filings.append(frame)
+    if filings:
+        filings = pd.concat(filings, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=EVENT_COLUMNS + ["security_id"])
+
+    # 4-5. window membership + per-date dedupe (home first, then earliest
+    # acceptance, then lowest cik)
+    filings = _filings_in_windows(filings, cik_rows)
+    if filings.empty:
+        return pd.DataFrame(columns=EVENT_COLUMNS + ["security_id"])
+    filings["cik_int"] = filings["cik"].astype(int)
+    filings = filings.sort_values(
+        ["et_date", "home", "acceptance_datetime", "cik_int"],
+        ascending=[True, False, True, True], kind="stable")
+    filings = filings.drop_duplicates("et_date", keep="first")
+
+    # 6. events under the symbol covering each filing's date
+    rows = []
+    for _, filing in filings.iterrows():
+        symbol = _symbol_at(sym_rows, filing["et_date"])
+        row = _build_one_event(
+            symbol, filing, ctx.session_index, ctx.price_source,
+            ctx.options_source, filing["cik"], label)
+        if row is not None:
+            rows.append(row)
+    if not rows:
+        table = pd.DataFrame(columns=EVENT_COLUMNS)
+    else:
+        table = pd.DataFrame(rows, columns=EVENT_COLUMNS)
+    table = table.sort_values("event_date").reset_index(drop=True)
+    table["next_earnings_session"] = table["event_date"].shift(-1)
+    table["pre_is_stale"] = table["pre_is_stale"].astype("boolean")
+
+    # 7. keep events inside the security's candidate pieces
+    kept = _events_in_intervals(
+        table, [p for _, p in sid_pieces.iterrows()], ctx.start_ts, ctx.end_ts)
+    if len(kept):
+        kept["security_id"] = sid
+
+        # 8. SUE under the last symbol/main cik, with predecessor ciks
+        if ctx.include_sue:
+            try:
+                symbol = sym_rows[-1][0] if sym_rows else kept["ticker"].iloc[-1]
+                main_cik = cik_rows[-1][0]
+                first_seen = sid_cik_full.groupby("cik")["valid_from"].min()
+                predecessors = [
+                    str(int(c)) for c in
+                    first_seen.sort_values().index if str(int(c)) != main_cik
+                ]
+                quarters = quarterly_sue(
+                    symbol, main_cik, ctx.edgar_source, ctx.price_source,
+                    history_start=ctx.sue_history_start,
+                    predecessor_ciks=predecessors)
+                kept = attach_sue(kept, quarters)
+            except Exception as exc:  # noqa: BLE001 - SUE is additive
+                sue_failed.setdefault(sid, f"{type(exc).__name__}: {exc}")
+                kept = attach_sue(kept, pd.DataFrame(columns=QUARTER_COLUMNS))
+
+    # 9. cik_gaps: long stretches of a cik's home span with no filing
+    home = {
+        (row["cik"], row["et_date"])
+        for _, row in filings[filings["home"]].iterrows()
+    }
+    notes = []
+    for c, vf, vt, src in cik_rows:
+        if src not in ("massive", "manual"):
+            continue
+        spans = []
+        home_hi = vt if vt is not None else ctx.end_ts + pd.Timedelta(days=1)
+        for _, piece in sid_pieces.iterrows():
+            ps = pd.Timestamp(piece["start_date"])
+            pe = piece["end_date_excl"]
+            pe = (
+                ctx.end_ts + pd.Timedelta(days=1)
+                if pd.isna(pe)
+                else pd.Timestamp(pe)
+            )
+            lo = max(vf, ps, ctx.start_ts)
+            hi = min(home_hi, pe, ctx.end_ts + pd.Timedelta(days=1))
+            if lo < hi:
+                spans.append((lo, hi))
+        if sum((hi - lo).days for lo, hi in spans) >= 180 and not any(
+            cik == c and any(lo <= d < hi for lo, hi in spans)
+            for cik, d in home
+        ):
+            a = min(lo for lo, _ in spans).strftime("%Y-%m-%d")
+            b = max(hi for _, hi in spans).strftime("%Y-%m-%d")
+            notes.append(f"CIK {c} has no 8-K Item 2.02 in [{a}, {b})")
+    if notes:
+        cik_gaps[sid] = "; ".join(notes)
+    return kept
+
+
+def _hist_rows(frame, value_col):
+    """[(value, vf_ts, vt_ts_or_None, source)] from a segments frame,
+    sorted by valid_from."""
+    rows = []
+    for _, row in frame.sort_values("valid_from").iterrows():
+        vt = row["valid_to_excl"]
+        rows.append((
+            str(row[value_col]),
+            pd.Timestamp(row["valid_from"]),
+            None if vt == "" or pd.isna(vt) else pd.Timestamp(vt),
+            row["source"],
+        ))
+    return rows
+
+
+def _piece_symbol_rows(sid_pieces, ctx):
+    """[(ticker, vf_ts, vt_ts_or_None)] covering [calendar_start, end]:
+    each piece's ticker over its span, the prefix taking the first piece's
+    ticker and gaps/suffixes the preceding one."""
+    start = pd.Timestamp(ctx.calendar_start)
+    close = ctx.end_ts + pd.Timedelta(days=1)
+    rows = []
+    for _, piece in sid_pieces.sort_values("start_date").iterrows():
+        ps = max(pd.Timestamp(piece["start_date"]), start)
+        pe = piece["end_date_excl"]
+        pe = close if pd.isna(pe) else min(pd.Timestamp(pe), close)
+        if ps >= pe:
+            continue
+        if not rows:
+            if ps > start:
+                rows.append((piece["ticker"], start, ps))
+        elif rows[-1][2] < ps:
+            rows.append((rows[-1][0], rows[-1][2], ps))
+        rows.append((piece["ticker"], ps, pe))
+    if not rows:
+        rows.append((sid_pieces.iloc[0]["ticker"], start, close))
+    if rows[-1][2] is None or rows[-1][2] < close:
+        rows.append((rows[-1][0], rows[-1][2] or close, close))
+    return rows
+
+
+def _symbol_at(rows, d):
+    """The ticker covering `d` in [(ticker, vf, vt_or_None)] rows."""
+    chosen = rows[0][0]
+    for ticker, vf, vt, *_rest in rows:
+        if vf <= d and (vt is None or d < vt):
+            return ticker
+        if vf > d:
+            break
+        chosen = ticker
+    return chosen
+
+
+def _filings_in_windows(filings, cik_rows):
+    """Filings whose et_date falls in a window of a same-cik row:
+    home_i = [vf_i, vt_i); window_i = [vf_i - L, vt_i + R) with L/R =
+    _CIK_BOUNDARY_SLACK_DAYS when the neighbouring row has a different cik.
+    Tags each kept filing with `home` (inside a home span)."""
+    slack = pd.Timedelta(days=_CIK_BOUNDARY_SLACK_DAYS)
+    open_end = pd.Timestamp.max.tz_localize(None)
+    keep = []
+    for _, filing in filings.iterrows():
+        cand = home = False
+        for i, (c, vf, vt, _src) in enumerate(cik_rows):
+            if c != filing["cik"]:
+                continue
+            hi = vt if vt is not None else open_end
+            left = slack if i > 0 and cik_rows[i - 1][0] != c else \
+                pd.Timedelta(0)
+            right = slack if i + 1 < len(cik_rows) and \
+                cik_rows[i + 1][0] != c else pd.Timedelta(0)
+            if vf - left <= filing["et_date"] < hi + right:
+                cand = True
+            if vf <= filing["et_date"] < hi:
+                home = True
+        if cand:
+            keep.append({**filing.to_dict(), "home": home})
+    return pd.DataFrame(keep)
 
 
 def _empty_events_frame() -> pd.DataFrame:
