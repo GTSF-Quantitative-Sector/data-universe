@@ -25,6 +25,8 @@ def register(
     description: str = "",
     registry: Optional[dict] = None,
     required_prefix: str = REQUIRED_PREFIX,
+    version: int = 1,
+    horizon_trading_days: Optional[int] = None,
 ) -> Callable:
     """Decorator factory registering a label function under `name`.
 
@@ -35,11 +37,28 @@ def register(
         description: Human-readable description.
         registry: The dict to register into. Defaults to `LABEL_REGISTRY`.
         required_prefix: Prefix every label name must start with.
+        version: Code version stamped into precompute fingerprints -- bump
+            whenever the formula (or anything it calls) changes.
+        horizon_trading_days: Trading days the label looks forward; precompute
+            only writes rows whose full horizon is final. None means the
+            label is not precompute-safe.
 
     Raises:
-        ValueError: If `name` doesn't start with `required_prefix`, or if
-            `name` is already registered.
+        ValueError: If `name` doesn't start with `required_prefix`, if
+            `name` is already registered, or if `version`/`horizon_trading_days`
+            fail validation.
     """
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise ValueError(f"version must be an int >= 1, got {version!r}")
+    if horizon_trading_days is not None and (
+        not isinstance(horizon_trading_days, int)
+        or isinstance(horizon_trading_days, bool)
+        or horizon_trading_days < 0
+    ):
+        raise ValueError(
+            "horizon_trading_days must be None or an int >= 0, "
+            f"got {horizon_trading_days!r}"
+        )
     target = LABEL_REGISTRY if registry is None else registry
 
     def decorator(fn: Callable) -> Callable:
@@ -55,6 +74,8 @@ def register(
             warmup_trading_days=warmup_trading_days,
             project=project,
             description=description,
+            version=version,
+            horizon_trading_days=horizon_trading_days,
         )
         return fn
 

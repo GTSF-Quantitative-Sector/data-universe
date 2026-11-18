@@ -106,3 +106,25 @@ def test_compute_with_holiday_start_matches_first_session_after():
     )
     pd.testing.assert_series_equal(holiday, next_day)
     assert not holiday.isna().iloc[0]
+
+
+def test_register_version_defaults_and_validation():
+    local_registry = {}
+
+    @registry.register("ver_default", registry=local_registry)
+    def _fn(ticker, start, end, source):
+        return pd.Series(dtype="float64")
+
+    spec = local_registry["ver_default"]
+    assert spec.version == 1
+    assert spec.horizon_trading_days == 0
+
+    @registry.register("ver_bump", version=3, registry=local_registry)
+    def _fn2(ticker, start, end, source):
+        return pd.Series(dtype="float64")
+
+    assert local_registry["ver_bump"].version == 3
+
+    for bad in (0, -1, 1.5, "2", True):
+        with pytest.raises(ValueError):
+            registry.register(f"badver_{bad}", version=bad, registry=local_registry)

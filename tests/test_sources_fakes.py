@@ -9,7 +9,11 @@ import pytest
 
 from data_universe.sources import adjust
 from data_universe.sources.base import BAR_COLUMNS
-from data_universe.sources.fakes import FakeMarket, FakePolygonSource
+from data_universe.sources.fakes import (
+    FakeMarket,
+    FakePolygonSource,
+    FakeRateSource,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -217,3 +221,10 @@ def test_fake_source_exposes_raw_split_adjusted_and_dividends():
         source.daily_bars_split_adjusted(*args), market.split_adjusted_bars(*args)
     )
     pd.testing.assert_frame_equal(source.dividends(*args), market.dividends(*args))
+
+
+def test_fake_rate_source_precompute_fingerprint():
+    assert FakeRateSource(0.05).precompute_fingerprint() == {"annual_rate": 0.05}
+    assert FakeRateSource(0.02).precompute_fingerprint() == {"annual_rate": 0.02}
+    assert FakeRateSource(0.05).precompute_fingerprint() != \
+        FakeRateSource(0.02).precompute_fingerprint()

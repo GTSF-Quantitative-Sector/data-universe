@@ -10,7 +10,7 @@ and incremented on every merged change. `pip install -e .` and
 `pip install git+https://github.com/GTSF-Quantitative-Sector/data-universe.git` will not
 reliably pick up code changes for consumers who pin by version otherwise.
 
-**Status: current version is `"0.12.0"`.** The rule lapsed twice: 40 commits across 7
+**Status: current version is `"0.13.0"`.** The rule lapsed twice: 40 commits across 7
 implementation phases shipped before the first bump to `"0.2.0"`, and 0.4.0's disk-cache
 work then shipped without a bump being recorded here either. Follow the rule from here
 on — bump both on every merged change, not just when someone notices the drift.
@@ -141,3 +141,20 @@ Raw store note (v0.9.0): `StoreBackedSource` writes under `<data_dir>/raw/` (or 
 `root=` given). Keep one root per vendor family — the manifest's `family` guard raises
 on a foreign store rather than serving it. After a vendor correction to history,
 call `RawStore.invalidate(dataset, key)`; splits rebase automatically.
+
+## 9. Precompute versions and invalidation
+
+Precompute v2 (v0.13.0) versions every dataset by a fingerprint of its spec —
+code `version=`, explicit parameters, source family, bar conventions — under
+`<out_dir>/<name>/<fingerprint>/`. **Bump `version=` on the `@register` call
+whenever a feature/label's formula or anything it calls changes** — the
+shared helpers in `features/core.py`, the per-feature helpers in
+`features/library.py`, and `sources/adjust.py` all count (a helper fix that
+alters outputs is a version bump). Old versions stay on disk until removed.
+
+- After a vendor correction to history that should reach derived data, call
+  `invalidate(name, keys=..., start=..., end=...)` (or a wider scope) and
+  rerun `precompute()` — coverage gaps recompute only what was dropped.
+- Periodically review `precompute_status()`: rows with `current=False` are
+  versions whose spec no longer matches the live registry — remove them with
+  `invalidate(name, version=<fingerprint>)` once nothing reads them.

@@ -33,6 +33,9 @@ import pandas as pd
 from data_universe.sources.base import NY_TZ, DataSourceError
 
 DIVIDEND_CASH_BASIS = "raw"
+# Bump when the adjusted-bar construction changes; precompute fingerprints
+# include it so stale derived data can't silently survive a methodology fix.
+ADJUSTMENT_CONVENTION = "total_return_v1"
 DIVIDEND_COLUMNS = ["ex_dividend_date", "cash_amount", "currency", "dividend_type"]
 PRICE_COLUMNS = ["open", "high", "low", "close", "vwap"]
 

@@ -18,6 +18,12 @@ def test_feature_and_label_registries_are_exported():
 def test_precompute_and_load_feature_are_exported():
     assert callable(q.precompute)
     assert callable(q.load_feature)
+    assert callable(q.precompute_dataset)
+    assert callable(q.load_dataset)
+    assert callable(q.precompute_status)
+    assert "precompute_dataset" in q.__all__
+    assert "load_dataset" in q.__all__
+    assert "precompute_status" in q.__all__
 
 
 def test_membership_is_exported():

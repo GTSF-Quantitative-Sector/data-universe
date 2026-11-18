@@ -27,6 +27,7 @@ def _daily_closes(ticker: str, start: str, end: str, source) -> pd.Series:
     warmup_trading_days=0,
     project="vrp",
     description="Realized close-to-close vol over the 21 trading days AFTER each date",
+    horizon_trading_days=21,
 )
 def fwd_rv_cc_21d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     trailing = rv_cc_21d(ticker, start, end, source)
@@ -38,6 +39,7 @@ def fwd_rv_cc_21d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Ser
     warmup_trading_days=0,
     project="vrp",
     description="iv_index minus fwd_rv_cc_21d (realized, ex-post VRP)",
+    horizon_trading_days=21,
 )
 def fwd_vrp_expost(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     iv = iv_index(ticker, start, end, source)
@@ -50,6 +52,7 @@ def fwd_vrp_expost(ticker: str, start: str, end: str, source, **kwargs) -> pd.Se
     warmup_trading_days=0,
     project="pead",
     description="Simple return from each date to 15 trading days later",
+    horizon_trading_days=15,
 )
 def fwd_ret_15d(ticker: str, start: str, end: str, source, **kwargs) -> pd.Series:
     closes = _daily_closes(ticker, start, end, source)

@@ -60,6 +60,10 @@ shared `compute()`.
 - A label's forward-looking rows near the end of any requested `[start, end]` range are
   genuinely `NaN` — `compute()` never fetches data past the requested `end` — this is a
   documented limitation, not a bug.
+- `@register` takes `version: int = 1` (bump whenever the formula or anything it calls
+  changes — helpers included) and labels additionally take
+  `horizon_trading_days: Optional[int]` (`None` = not precompute-safe). Both are stamped
+  into the precompute fingerprint; invalid values raise `ValueError` at decoration time.
 - **Risk-free rate (`rate_source`)**: `ret_excess_1d` requires `compute(...,
   rate_source=...)` (e.g. `FredSource()`, `FakeRateSource()`) and raises `ValueError`
   without one. `beta_ols_60d/90d` and `alpha_ols_60d/90d` accept an optional
@@ -333,32 +337,109 @@ per-ticker isolated) and fetches the calendar once per call.
 time it is requested by ANY process sharing the root and zero afterwards;
 the still-open tail costs one normal (cached) call per request.
 
-## Precompute parquet output
+## Precompute parquet output (v2, since 0.13.0)
 
-Source: `data_universe/precompute.py`.
+Source: `data_universe/precompute.py` + `data_universe/store/derived.py`.
 
-- Path: `<out_dir>/<feature_or_label_name>.parquet`. Default `out_dir`:
-  `<config.get_data_dir()>/processed`.
-- Format: long, columns exactly `date, ticker, value`.
-- Rows with a `NaN` value are dropped before writing — never written to disk.
-- Rerunning `precompute()` for a ticker/date range already present **upserts** on
-  `(date, ticker)`: existing rows for keys not touched by the new run are preserved; keys
-  touched by the new run are replaced, never duplicated.
-- `precompute(tickers, feature_names, start, end, out_dir=None, source=None, **kwargs) ->
-  PrecomputeReport`: `feature_names` may name anything in `FEATURE_REGISTRY` or
-  `LABEL_REGISTRY`; `**kwargs` are forwarded to `compute()` for every pair (e.g.
-  `rate_source=FredSource()`). One `(ticker, feature_name)` pair's failure (unregistered
-  name, a source error) is caught and recorded in `PrecomputeReport.failed[(ticker, name)]
-  = str(error)`; it never stops the rest of the batch. Successful pairs are recorded in
-  `PrecomputeReport.succeeded[(ticker, name)] = <rows written>`.
-- Writes are safe for concurrent writers: on POSIX the read-merge-write holds an
-  exclusive `fcntl.flock` on `<out_dir>/.<name>.parquet.lock`, and the result is written
-  to a temp file in the same directory then `os.replace`'d into place — a failed write
-  leaves the previous file byte-identical and no temp files behind. On Windows there is
-  no lock (atomic write still applies).
-- `load_feature(name, tickers=None, out_dir=None) -> pd.DataFrame` reads the file back,
-  optionally filtered to a ticker subset. Raises `FileNotFoundError` if `name` was never
-  precomputed to that `out_dir`.
+### Layout
+
+Versioned, per-key partitioned datasets under `out_dir`
+(default `<config.get_data_dir()>/processed`):
+
+```
+<out_dir>/<name>/<fingerprint>/dataset.json               -- version manifest
+<out_dir>/<name>/<fingerprint>/<key>.parquet              -- the rows
+<out_dir>/<name>/<fingerprint>/<key>.coverage.json        -- compute records
+<out_dir>/<name>/<fingerprint>/.<key>.lock                -- flock target
+<out_dir>/<name>/<fingerprint>/.dataset.lock              -- manifest flock
+```
+
+`dataset.json` stores `schema_version`, `name`, `kind`
+(`feature`/`label`/`dataset`), `fingerprint`, the exact `spec` that was hashed,
+`key_column`, `date_column`, the stored `columns` (null until the first
+non-empty write), `created_at`, `tool_version`. `coverage.json` records every
+computed range as `{start, end, rows, computed_at, tool_version, source}` with
+inclusive `YYYY-MM-DD` dates — coverage is the durable statement of what a key
+file holds, never inferred from rows.
+
+### Fingerprint
+
+`fingerprint = sha256(json.dumps(spec, sort_keys=True))[:16]` names the version
+directory. Registry spec: `schema_version`, `name`, `kind`, `code_version`
+(the registered `version=`), `horizon_trading_days` (0 for features),
+`source_family`, `conventions` (`bars` = `adjust.ADJUSTMENT_CONVENTION`,
+`dividend_cash_basis` = `adjust.DIVIDEND_CASH_BASIS`), and `params` — the
+function's **explicit keyword parameters** (everything after
+`ticker, start, end, source`, minus `*args`/`**kwargs`), each valued as passed
+or defaulted. Values absorbed through `**kwargs` are NOT fingerprinted
+(`ret_1d` has `params == {}` whether or not `rate_source` is passed;
+`beta_ols_60d` fingerprints `rate_source`). Generic dataset spec adds
+`final_lag_sessions`, `key_column`, `date_column` instead of conventions.
+`source_family`: `StoreBackedSource(X)` matches `X`; other sources use
+`store_family` or their class name. Parameter canonicalization is JSON-safe
+only — functions/classes become `{"callable": ...}`, objects with
+`precompute_fingerprint()` become `{"type", "fingerprint"}`, anything else
+becomes `{"type": ...}` and other attributes are never read (secrets stay out
+of `dataset.json`).
+
+### Run semantics
+
+Per (name, key): `M = min(end, _last_complete_date())`; the final cap `C` is `M`
+for features, `horizon_trading_days`/`final_lag_sessions` sessions earlier for
+labels/datasets (one session calendar per call, built lazily). Only gaps of
+`[start, C]` not already in coverage are computed (`force=True` recomputes the
+whole final window); `a`/`b` span the first/last gap. When `end > M` and the
+horizon is 0, rows in `(M, end]` are a **provisional tail** — written but never
+covered, so the next run recomputes exactly them. Computing extends `h`
+sessions past `b` for label maturity, then rows are kept only inside `[a, b]`.
+`replace_range(a, b, rows, record)` is the tombstone mechanism: it drops every
+stored row dated in `[a, b]` before adding the fresh ones, so a value that
+turns `NaN` disappears. Coverage records cover `[a, min(b, C)]` only —
+provisional-only writes add none. A pair that computes nothing lands in
+`report.skipped` (`"up to date"` / `"no final dates in window"`) with zero
+source calls; failures land in `report.failed` without stopping the batch;
+writes happen per pair under the key lock so a crash resumes cleanly.
+
+- `precompute(tickers, feature_names, start, end, out_dir=None, source=None, *,
+  feature_kwargs=None, force=False, **kwargs) -> PrecomputeReport`:
+  `feature_kwargs` maps a feature name to extra kwargs for that feature only;
+  `**kwargs` reach every pair as before. Report keys are `(key, name)`:
+  `succeeded` (rows written), `failed` (error string), `skipped` (reason),
+  `versions` (name -> fingerprint used). `start > end` raises `ValueError`;
+  a label registered without `horizon_trading_days` fails per ticker with a
+  pointer to register it.
+- `precompute_dataset(name, builder, keys, start, end, *, version=1, params=None,
+  final_lag_sessions=0, source=None, key_column="key", date_column="date",
+  out_dir=None, force=False) -> PrecomputeReport`: generic datasets;
+  `builder(key, start, end)` returns a frame carrying `date_column` (the key
+  column is set to `key`, a conflicting value raises). Registered names are
+  rejected; `final_lag_sessions > 0` requires a `source` for the calendar.
+  NaN rows are never dropped for datasets.
+
+### Loading
+
+- `load_feature(name, tickers=None, out_dir=None, *, start=None, end=None,
+  version=None, source=None, **params)` selects the single version matching
+  the current registry spec (code version, horizon, conventions) plus any
+  `version=`/`source=`/`**params` filters; zero matches -> `FileNotFoundError`
+  listing versions, several -> `ValueError`. Legacy fallback: with no filters
+  and no versioned data, an unversioned `<name>.parquet` (pre-v0.13) is read
+  with a `UserWarning`.
+- `load_dataset(name, keys=None, out_dir=None, *, start=None, end=None,
+  version=None, code_version=None, **params)` — same selection minus the
+  registry-current rule.
+- Both concat the version's key files, filter dates inclusively, sort by
+  `[date, key]` and return `[date, <key column>, *values]`.
+- `invalidate(name, keys=None, start=None, end=None, version=None,
+  out_dir=None) -> int` removes data: no keys/dates/version -> every version
+  dir plus the legacy file; `version` alone -> that dir; otherwise per
+  (version, key) range-invalidation (coverage records split, metadata kept).
+  Returns the count of (version, key) pairs changed — the removed legacy
+  `<name>.parquet` counts as one.
+- `precompute_status(out_dir=None)` -> one row per (name, fingerprint, key)
+  with coverage span, interval/row counts, `code_version`, `source_family`,
+  `params` (JSON) and `current` (spec still matches the live registry;
+  `None` for datasets/unregistered names).
 
 ## Membership grid
 

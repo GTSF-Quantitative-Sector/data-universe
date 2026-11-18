@@ -9,7 +9,7 @@ import pytest
 
 from data_universe import config
 from data_universe.cache import get_cache, reset_cache
-from data_universe.precompute import precompute
+from data_universe.precompute import load_feature, precompute
 from data_universe.sources import adjust
 from data_universe.sources.base import (
     DataSourceError,
@@ -259,32 +259,73 @@ def test_unknown_attributes_and_hourly_bars_delegate(tmp_path):
     )
 
 
+class _AllCountingFake(CountingFake):
+    """CountingFake plus `daily_bars` (the session-calendar call)."""
+
+    def daily_bars(self, ticker, start, end):
+        self._count("daily_bars", ticker)
+        return super().daily_bars(ticker, start, end)
+
+
 def test_precompute_rerun_makes_zero_upstream_calls(tmp_path):
     # SPY included because iv_index only exists for the SPY proxy; the
     # window ends before the pinned L, so the second run is fully stored.
     root = tmp_path / "raw"
     out_dir = tmp_path / "processed"
     upstream = CountingFake()
+    features = ["ret_1d", "rv_cc_21d", "beta_ols_60d", "dollar_volume_1d", "iv_index"]
+    tickers = ["AAA", "BBB", "SPY"]
     precompute(
-        ["AAA", "BBB", "SPY"],
-        ["ret_1d", "rv_cc_21d", "beta_ols_60d", "dollar_volume_1d", "iv_index"],
-        "2024-01-01", "2024-06-01",
+        tickers, features, "2024-01-01", "2024-06-01",
         out_dir=str(out_dir),
         source=StoreBackedSource(upstream, root=root),
     )
     second = CountingFake()
     precompute(
-        ["AAA", "BBB", "SPY"],
-        ["ret_1d", "rv_cc_21d", "beta_ols_60d", "dollar_volume_1d", "iv_index"],
-        "2024-01-01", "2024-06-01",
+        tickers, features, "2024-01-01", "2024-06-01",
         out_dir=str(tmp_path / "processed2"),
         source=StoreBackedSource(second, root=root),
     )
-    for name in ("ret_1d", "rv_cc_21d", "beta_ols_60d", "dollar_volume_1d", "iv_index"):
-        one = pd.read_parquet(out_dir / f"{name}.parquet")
-        two = pd.read_parquet(tmp_path / "processed2" / f"{name}.parquet")
+    for name in features:
+        one = load_feature(name, out_dir=str(out_dir))
+        two = load_feature(name, out_dir=str(tmp_path / "processed2"))
         pd.testing.assert_frame_equal(one, two)
     assert second.calls == {}  # a rerun on the same root needs zero upstream calls
+
+
+def test_precompute_rerun_same_out_dir_makes_zero_calls(tmp_path):
+    # Same derived store + plain counting fake (no StoreBackedSource): a
+    # covered rerun never reaches the source at all.
+    out_dir = tmp_path / "processed"
+    features = ["ret_1d", "rv_cc_21d", "beta_ols_60d", "dollar_volume_1d", "iv_index"]
+    tickers = ["AAA", "BBB", "SPY"]
+    upstream = _AllCountingFake()
+    precompute(tickers, features, "2024-01-01", "2024-06-01",
+               out_dir=str(out_dir), source=upstream)
+    calls_after_first = dict(upstream.calls)
+    precompute(tickers, features, "2024-01-01", "2024-06-01",
+               out_dir=str(out_dir), source=upstream)
+    assert upstream.calls == calls_after_first
+
+
+def test_precompute_rerun_with_label_makes_only_calendar_calls(tmp_path):
+    # With a label in the mix the rerun still skips every covered pair, but
+    # the label's maturity cap needs one session calendar -> one SPY call.
+    out_dir = tmp_path / "processed"
+    features = ["ret_1d", "fwd_ret_15d"]
+    tickers = ["AAA", "BBB"]
+    upstream = _AllCountingFake()
+    precompute(tickers, features, "2024-01-01", "2024-06-01",
+               out_dir=str(out_dir), source=upstream)
+    calls_after_first = dict(upstream.calls)
+    precompute(tickers, features, "2024-01-01", "2024-06-01",
+               out_dir=str(out_dir), source=upstream)
+    delta = {
+        key: upstream.calls.get(key, 0) - calls_after_first.get(key, 0)
+        for key in set(upstream.calls) | set(calls_after_first)
+    }
+    delta = {k: v for k, v in delta.items() if v}
+    assert delta == {("daily_bars", "SPY"): 1}
 
 
 def test_entirely_live_window_returns_no_rows_before_start(tmp_path, monkeypatch):

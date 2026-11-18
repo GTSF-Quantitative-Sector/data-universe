@@ -9,10 +9,16 @@ from data_universe import config, membership
 from data_universe.cache import get_cache, simulate
 from data_universe.features.registry import FEATURE_REGISTRY
 from data_universe.labels.registry import LABEL_REGISTRY
-from data_universe.precompute import load_feature, precompute
+from data_universe.precompute import (
+    load_dataset,
+    load_feature,
+    precompute,
+    precompute_dataset,
+    precompute_status,
+)
 from data_universe.sources import sec_adapter as universe
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     "config",
@@ -22,7 +28,10 @@ __all__ = [
     "FEATURE_REGISTRY",
     "LABEL_REGISTRY",
     "precompute",
+    "precompute_dataset",
     "load_feature",
+    "load_dataset",
+    "precompute_status",
     "membership",
     "__version__",
 ]

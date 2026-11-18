@@ -330,6 +330,10 @@ class FakeRateSource:
     def __init__(self, annual_rate: float = 0.05) -> None:
         self.annual_rate = annual_rate
 
+    def precompute_fingerprint(self) -> dict:
+        """Stable identity for precompute versioning."""
+        return {"annual_rate": float(self.annual_rate)}
+
     def daily_rate(
         self,
         series_id: str = "DTB3",

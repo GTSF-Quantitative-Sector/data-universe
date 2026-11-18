@@ -48,6 +48,11 @@ class FredSource:
         self._session = session or requests.Session()
         self._base_url = base_url
 
+    def precompute_fingerprint(self) -> dict:
+        """Stable identity for precompute versioning: which series and unit
+        conversion this source feeds features."""
+        return {"series_id": "DTB3", "conversion": "percent/100/252"}
+
     @cached("daily_rate")
     def daily_rate(
         self,

@@ -29,12 +29,15 @@ beta = compute_feature(
     q.FEATURE_REGISTRY, "beta_ols_60d", "AAPL", "2024-01-01", "2024-06-01", source
 )
 
-# Or batch-compute to parquet and read it back later:
+# Or batch-compute to the versioned store and read it back later:
+from data_universe.sources.fakes import FakeRateSource
 report = q.precompute(
     ["AAPL", "MSFT"], ["rv_cc_21d", "beta_ols_60d"], "2024-01-01", "2024-06-01",
     out_dir="data/processed", source=source,
+    feature_kwargs={"beta_ols_60d": {"rate_source": FakeRateSource()}},
 )
-panel = q.load_feature("beta_ols_60d", tickers=["AAPL"])
+panel = q.load_feature("beta_ols_60d", tickers=["AAPL"], start="2024-03-01")
+q.precompute_status("data/processed")   # coverage + which versions are stale
 
 # With a real Polygon key instead of the fake:
 q.config.set_polygon_key("YOUR_KEY")
@@ -147,11 +150,15 @@ call `features.registry.compute()` / `labels.registry.compute()` directly, or us
   `python -m data_universe.membership.refresh [--ref REF] [--dry-run]`; see
   `MAINTENANCE.md` item 2.
 - **`precompute.py`** — `precompute(tickers, feature_names, start, end, out_dir=None,
-  source=None, **kwargs)` batch-computes to parquet with upsert-on-rerun, per-pair
-  failure isolation (`PrecomputeReport`), and an flocked + atomic write so concurrent
-  writers can't corrupt a file; extra `**kwargs` (e.g. `rate_source=FredSource()`)
-  are forwarded to `compute()` for every pair. `load_feature(name, tickers=None,
-  out_dir=None)` reads the result back.
+  source=None, *, feature_kwargs=None, force=False, **kwargs)` batch-computes into a
+  versioned per-key store (`<out_dir>/<name>/<fingerprint>/`): reruns skip covered
+  ranges, `force=True` recomputes them, per-pair failures land in
+  `PrecomputeReport.failed`, and writes are flocked + atomic. `feature_kwargs`
+  scopes extra kwargs to one feature; `**kwargs` (e.g. `rate_source=FredSource()`)
+  reach every pair. `load_feature(name, ..., version=, source=, **params)` reads a
+  feature/label back with version selection; `precompute_dataset`/`load_dataset`
+  cover generic datasets; `invalidate()` drops ranges/versions;
+  `precompute_status()` audits coverage and staleness (`current=False`).
 
 ## Index universes
 

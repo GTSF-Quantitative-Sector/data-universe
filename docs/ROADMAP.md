@@ -17,7 +17,7 @@ validation flags) as v0.9.0, and the as-of CIK resolver as v0.10.0 — see
 | **2** | **PEAD event table v2 — shipped as v0.7.0** | PEAD | M | 1 (+ probe for the as-of CIK resolver) |
 | 3 | (3a shipped as v0.9.0)  Durable raw store + bulk ingest + ingest validation | GNN, PEAD | XL | 1 + probe |
 | 4 | Identity resolution (`membership/identity.py`) | GNN, PEAD | L | 1 + probe (3 helps) |
-| 5 | Precompute v2 (panels, versioning, tombstones) | all | M | 3 |
+| 5 | Precompute v2 (panels, versioning, tombstones) — **shipped as v0.13.0** | all | M | 3 |
 | 6 | GNN datasets (return panels, open-to-open labels, correlation edges) | GNN | L | 3, 4, 5 |
 | 7 | New datasets: XBRL SUE, earnings calendar/estimates, news, short interest (7a shipped as v0.8.0) | PEAD, GNN | M each | 1 + probe; parallel with 3–6 |
 | 8 | Later: VRP IV30, Beta intraday/Kalman | VRP, Beta | L | 3 |
@@ -81,13 +81,23 @@ endpoint (`OPEN_QUESTIONS.md` item 24); panel CIKs default to SEC's current map
   `cik_history`/`ticker_history` (`cik_segments`/`symbol_segments`), so
   CIK switches inside intervals (MDT 2015, CI 2018, AVGO), predecessor
   CIKs (DIS, GOOGL) and historical symbols (SPGI←MHFI, BKNG←PCLN) all
-  reach the event table. **Next: Phase 5** (precompute v2).
+  reach the event table.
+- **5 shipped as v0.13.0:** precompute v2 — versioned per-key derived
+  store (`<name>/<fingerprint>/`), coverage-gap incremental runs,
+  label maturity caps, provisional tails, NaN tombstones, generic
+  `precompute_dataset`, `invalidate`/`precompute_status`. **Next: Phase 6**
+  (GNN datasets).
 
-### Phase 5 — precompute v2
+### Phase 5 — precompute v2 — shipped as v0.13.0
 
-Multi-column panel outputs (edge lists, event tables); version metadata (code + input
-dataset + parameter hash); skip completed work; explicit invalidation; NaN tombstones so
-a recomputed NaN deletes a stale value; per-feature kwargs.
+Done: `store/derived.py` `DerivedStore` (versioned per-key parquet +
+coverage.json, atomic writes, fcntl locks); `precompute.py` rewritten —
+fingerprint = hash of spec (code version, explicit params, source family,
+bar conventions), final cap via `_last_complete_date` +
+`horizon_trading_days`/`final_lag_sessions`, coverage gaps only, provisional
+tail for the not-yet-final sessions, `replace_range` tombstones,
+`feature_kwargs`, `precompute_dataset`/`load_dataset`/`invalidate`/
+`precompute_status`, legacy `<name>.parquet` readable with a warning.
 
 ### Phase 6 — GNN datasets
 
@@ -148,7 +158,7 @@ The probe ran 2026-11-03 against the Massive host (report:
    PEAD panel by security through `cik_history`/`ticker_history`
    (`cik_segments`/`symbol_segments`) — mid-interval CIK switches,
    predecessor CIKs and historical symbols all reach the event table.
-   Next: Phase 5.
+   **5 shipped as v0.13.0** (precompute v2). Next: Phase 6.
 4. Optional re-probe: set a FRED key and/or S3 flat-file credentials +
    `pip install -e ".[s3]"` to cover the skipped groups.
 5. Set a real SEC User-Agent contact (the placeholder is polite but generic).

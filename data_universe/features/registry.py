@@ -22,6 +22,8 @@ class FeatureSpec:
     warmup_trading_days: int
     project: str
     description: str
+    version: int = 1
+    horizon_trading_days: Optional[int] = 0
 
 
 FEATURE_REGISTRY: dict = {}
@@ -34,6 +36,7 @@ def register(
     description: str = "",
     registry: Optional[dict] = None,
     forbidden_prefix: str = FORBIDDEN_PREFIX,
+    version: int = 1,
 ) -> Callable:
     """Decorator factory registering a feature function under `name`.
 
@@ -46,11 +49,15 @@ def register(
         description: Human-readable description.
         registry: The dict to register into. Defaults to `FEATURE_REGISTRY`.
         forbidden_prefix: Prefix that is not allowed for a feature name.
+        version: Code version stamped into precompute fingerprints -- bump
+            whenever the formula (or anything it calls) changes.
 
     Raises:
-        ValueError: If `name` starts with `forbidden_prefix`, or if `name`
-            is already registered.
+        ValueError: If `name` starts with `forbidden_prefix`, if `name`
+            is already registered, or if `version` isn't an int >= 1.
     """
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise ValueError(f"version must be an int >= 1, got {version!r}")
     target = FEATURE_REGISTRY if registry is None else registry
 
     def decorator(fn: Callable) -> Callable:
@@ -66,6 +73,7 @@ def register(
             warmup_trading_days=warmup_trading_days,
             project=project,
             description=description,
+            version=version,
         )
         return fn
 

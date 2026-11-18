@@ -45,3 +45,32 @@ def test_label_registry_module_default_populated_by_decorator():
         return pd.Series(dtype="float64")
 
     assert "fwd_default_target" in registry.LABEL_REGISTRY
+
+
+def test_register_version_and_horizon_defaults_and_validation():
+    local_registry = {}
+
+    @registry.register("fwd_meta_default", registry=local_registry)
+    def _fn(ticker, start, end, source):
+        return pd.Series(dtype="float64")
+
+    spec = local_registry["fwd_meta_default"]
+    assert spec.version == 1
+    assert spec.horizon_trading_days is None
+
+    @registry.register("fwd_meta_h", horizon_trading_days=21, version=2,
+                       registry=local_registry)
+    def _fn2(ticker, start, end, source):
+        return pd.Series(dtype="float64")
+
+    spec2 = local_registry["fwd_meta_h"]
+    assert spec2.horizon_trading_days == 21
+    assert spec2.version == 2
+
+    for bad in (0, -1, 1.5, "2", True):
+        with pytest.raises(ValueError):
+            registry.register(f"fwd_badver_{bad}", version=bad, registry=local_registry)
+    for bad in (-1, 1.5, "x", True):
+        with pytest.raises(ValueError):
+            registry.register(f"fwd_badh_{bad}", horizon_trading_days=bad,
+                              registry=local_registry)

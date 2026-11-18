@@ -138,3 +138,11 @@ def test_daily_rate_connection_error_never_leaks_the_api_key():
     assert exc.__context__ is None
     formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     assert "test-fred-key" not in formatted
+
+
+def test_precompute_fingerprint_is_stable():
+    source = FredSource(session=Mock())
+    assert source.precompute_fingerprint() == {
+        "series_id": "DTB3",
+        "conversion": "percent/100/252",
+    }
